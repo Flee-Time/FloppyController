@@ -3,18 +3,14 @@
 
 #include "mfm_decoder.h"
 #include "floppy_hw.h"
-#include "led_drv.h"
+#include "shared_state.h"
 
 void lba_to_chs(uint32_t lba, uint8_t *cylinder, uint8_t *head, uint8_t *sector) {
-    *sector   = (lba % 18) + 1;       
-    *head     = (lba / 18) % 2;       
-    *cylinder = (lba / (18 * 2));     
+    *sector   = (lba % 18) + 1;
+    *head     = (lba / 18) % 2;
+    *cylinder = (lba / (18 * 2));
 }
 
-// Standard CRC-16/CCITT (poly 0x1021, init 0xFFFF, no reflection, no final
-// XOR) -- this is the CRC used by IBM-format MFM ID and data fields.
-// `crc` lets callers chain calls across multiple buffers (e.g. a fixed
-// presync/mark sequence followed by the captured payload bytes).
 static uint16_t crc16_ccitt(const uint8_t* data, int len, uint16_t crc = 0xFFFF) {
     for (int i = 0; i < len; i++) {
         crc ^= (uint16_t)data[i] << 8;
@@ -27,61 +23,62 @@ static uint16_t crc16_ccitt(const uint8_t* data, int len, uint16_t crc = 0xFFFF)
 
 bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t target_sec, uint8_t* buffer) {
     pio_sm_clear_fifos(flux_pio, flux_sm);
-        
-    // RED: Hunting for flux
-    led_set_rgb(50, 0, 0); 
-    
+
     uint32_t shift_reg = 0;
     int bit_count = 0;
     bool in_sync = false;
-    
+
     enum State { HUNT_ID, READ_ID, HUNT_DATA, READ_DATA };
     State state = HUNT_ID;
     int byte_index = 0;
     uint8_t sector_header[6];
     uint8_t data_crc_bytes[2];
-    
+
+    static uint32_t s_pll = 200;
+
+    shared_debug_state = 0;
+    shared_debug_pll = s_pll;
+    shared_read_progress = 0;
+
     uint32_t start_time = to_ms_since_boot(get_absolute_time());
-    
-    // A floppy spins at ~300RPM (~200ms/revolution). Give ourselves a few
-    // revolutions of budget so a CRC failure on one pass can be retried on
-    // the next, instead of giving up after barely 1.5 revolutions.
-    while (to_ms_since_boot(get_absolute_time()) - start_time < 750) {
+
+    while (to_ms_since_boot(get_absolute_time()) - start_time < 500) {
         if (pio_sm_is_rx_fifo_empty(flux_pio, flux_sm)) continue;
-        
+
         uint32_t pio_val = pio_sm_get(flux_pio, flux_sm);
-        uint32_t ticks = 0xFFFFFFFF - pio_val; 
+        uint32_t ticks = 0xFFFFFFFF - pio_val;
 
-        // Bandpass Filter
-        if (ticks < 100 || ticks > 700) { 
-            in_sync = false; bit_count = 0; shift_reg = 0; continue; 
+        if (ticks < 100 || ticks > 700) {
+            in_sync = false;
+            bit_count = 0;
+            shift_reg = 0;
+            continue;
         }
 
-        // Software PLL
-        static uint32_t pll_base = 200; 
-        if (ticks > (pll_base - 40) && ticks < (pll_base + 40)) {
-            pll_base = (pll_base * 15 + ticks) / 16; 
+        if (ticks > (s_pll - 40) && ticks < (s_pll + 40)) {
+            s_pll = (s_pll * 15 + ticks) / 16;
+        } else if (ticks > (s_pll / 2 - 30) && ticks < (s_pll / 2 + 30)) {
+            s_pll = (s_pll * 15 + ticks * 2) / 16;
         }
 
-        uint32_t threshold_short_med = (pll_base * 5) / 4; 
-        uint32_t threshold_med_long  = (pll_base * 7) / 4; 
+        uint32_t threshold_short_med = (s_pll * 5) / 4;
+        uint32_t threshold_med_long  = (s_pll * 7) / 4;
 
         uint8_t windows = 4;
-        if (ticks < threshold_short_med) windows = 2;      
-        else if (ticks < threshold_med_long) windows = 3; 
-        
+        if (ticks < threshold_short_med) windows = 2;
+        else if (ticks < threshold_med_long) windows = 3;
+
         for (int i = 0; i < windows; i++) {
             shift_reg = (shift_reg << 1) | (i == windows - 1 ? 1 : 0);
             bit_count++;
-            
-            // Sync Mark Found
+
             if ((shift_reg & 0xFFFF) == 0x4489) {
-                led_set_rgb(0, 50, 0); // GREEN: Format found
                 in_sync = true;
-                bit_count = 0; 
+                bit_count = 0;
+                if (shared_read_progress < 1) shared_read_progress = 1;
                 continue;
             }
-            
+
             if (in_sync && bit_count == 16) {
                 uint8_t data_byte = 0;
                 if (shift_reg & 0x4000) data_byte |= 0x80;
@@ -92,35 +89,42 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
                 if (shift_reg & 0x0010) data_byte |= 0x04;
                 if (shift_reg & 0x0004) data_byte |= 0x02;
                 if (shift_reg & 0x0001) data_byte |= 0x01;
-                
+
                 bit_count = 0;
-                
+
                 if (state == HUNT_ID) {
                     if (data_byte == 0xFE) { state = READ_ID; byte_index = 0; }
                 } else if (state == READ_ID) {
                     sector_header[byte_index++] = data_byte;
                     if (byte_index == 6) {
-                        // CRC covers the 3 sync bytes + address mark + the
-                        // 4 header bytes (cyl, head, sector, size code).
                         static const uint8_t id_presync[4] = {0xA1, 0xA1, 0xA1, 0xFE};
                         uint16_t crc = crc16_ccitt(id_presync, 4);
                         crc = crc16_ccitt(sector_header, 4, crc);
                         uint16_t want_crc = (sector_header[4] << 8) | sector_header[5];
-                        bool id_crc_ok = (crc == want_crc);
 
-                        if (id_crc_ok &&
-                            sector_header[0] == target_cyl && 
-                            sector_header[1] == target_head && 
+                        if (crc == want_crc && shared_read_progress < 2)
+                            shared_read_progress = 2;
+
+                        shared_last_cyl  = sector_header[0];
+                        shared_last_head = sector_header[1];
+                        shared_last_sec  = sector_header[2];
+
+                        if (crc == want_crc &&
+                            sector_header[0] == target_cyl &&
+                            sector_header[1] == target_head &&
                             sector_header[2] == target_sec) {
                             state = HUNT_DATA;
-                            in_sync = false; shift_reg = 0; bit_count = 0;                            
+                            in_sync = false; shift_reg = 0; bit_count = 0;
+                            shared_read_progress = 3;
                         } else {
-                            state = HUNT_ID; in_sync = false; 
-                            led_set_rgb(25, 25, 0); // YELLOW: wrong sector or bad header CRC, keep looking
+                            state = HUNT_ID; in_sync = false;
                         }
                     }
                 } else if (state == HUNT_DATA) {
-                    if (data_byte == 0xFB) { state = READ_DATA; byte_index = 0; }
+                    if (data_byte == 0xFB) {
+                        state = READ_DATA; byte_index = 0;
+                        if (shared_read_progress < 4) shared_read_progress = 4;
+                    }
                 } else if (state == READ_DATA) {
                     if (byte_index < 512) {
                         buffer[byte_index] = data_byte;
@@ -130,28 +134,26 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
                     byte_index++;
 
                     if (byte_index == 514) {
-                        // CRC covers the 3 sync bytes + address mark + the
-                        // 512 data bytes we just captured.
                         static const uint8_t data_presync[4] = {0xA1, 0xA1, 0xA1, 0xFB};
                         uint16_t crc = crc16_ccitt(data_presync, 4);
                         crc = crc16_ccitt(buffer, 512, crc);
                         uint16_t want_crc = (data_crc_bytes[0] << 8) | data_crc_bytes[1];
 
                         if (crc == want_crc) {
-                            led_set_rgb(0, 0, 50); // BLUE: Success
-                            return true; 
+                            shared_read_progress = 5;
+                            shared_debug_pll = s_pll;
+                            return true;
                         } else {
-                            // Noisy revolution -- go back and try to re-sync
-                            // rather than handing the host corrupted data.
-                            led_set_rgb(25, 25, 0);
                             state = HUNT_ID; in_sync = false; bit_count = 0; shift_reg = 0;
+                            shared_debug_state = 3;
                         }
                     }
                 }
             }
         }
     }
-    
-    led_set_rgb(0, 0, 0); // Timeout
-    return false; 
+
+    shared_debug_state = 4;
+    shared_debug_pll = s_pll;
+    return false;
 }

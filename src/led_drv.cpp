@@ -23,7 +23,7 @@ void led_init() {
 }
 
 void led_set_rgb(uint8_t red, uint8_t green, uint8_t blue) {
-    // GRB ordering is standard for WS2812B
-    uint32_t mask = (green << 16) | (red << 8) | (blue << 0);
+    // RGB ordering
+    uint32_t mask = (red << 16) | (green << 8) | (blue << 0);
     pio_sm_put_blocking(led_pio, led_sm, mask << 8u);
 }

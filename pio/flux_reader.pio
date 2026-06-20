@@ -1,41 +1,30 @@
 .program flux_reader
 
-; The RP2040 runs at 200MHz. This state machine decrements a 32-bit counter
-; every clock cycle. When the RDATA pin goes LOW (active pulse), it pushes 
-; the counter value to the RX FIFO and resets.
-
 .wrap_target
-    mov x, ~null        ; Initialize X to 0xFFFFFFFF
+start:
+    in x, 32
+    push block
+    set x, 0
+    mov x, ~x
 wait_high:
-    jmp pin wait_low    ; If pin is HIGH, go to wait_low loop
-    jmp wait_high       ; Else wait until it goes HIGH
+    jmp pin, wait_low
+    jmp x--, wait_high
 wait_low:
-    jmp x-- test_low    ; Decrement X
-test_low:
-    jmp pin wait_low    ; If pin is still HIGH, keep looping and decrementing X
-pulse_found:
-    in x, 32            ; Pin went LOW! Push the inverted time to the ISR
-    push                ; Push ISR into the hardware FIFO
+    jmp pin, still_high
+    jmp start
+still_high:
+    jmp x--, wait_low
 .wrap
 
 % c-sdk {
 static inline void flux_reader_program_init(PIO pio, uint sm, uint offset, uint pin) {
     pio_sm_config c = flux_reader_program_get_default_config(offset);
-    
-    // Set the input pin and the JMP pin (used by 'jmp pin' instruction)
     sm_config_set_in_pins(&c, pin);
-    sm_config_set_jmp_pin(&c, pin); 
+    sm_config_set_jmp_pin(&c, pin);
     pio_gpio_init(pio, pin);
-    
-    // Auto-push disabled, push 32 bits manually
     sm_config_set_in_shift(&c, false, false, 32);
-    
-    // CRITICAL: Join TX and RX FIFOs into one massive 8-word RX FIFO
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
-    
-    // Run at full system clock speed (200 MHz)
     sm_config_set_clkdiv(&c, 1.0f);
-    
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
 }

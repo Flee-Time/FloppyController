@@ -1,1 +1,21 @@
-cant mount a disk in windows (request not supported) / possible corrupted data reading.
+DONE: reading is robust.
+  - PIO flux_reader measures full period (pulse + gap)
+  - CRC-16/CCITT on ID and data fields
+  - Static PLL with half-cell tracking
+  - 500ms read timeout, single external retry
+  - Core 0: USB MSC + CDC debug + LED (RGB)
+  - Core 1: pure floppy I/O, no peripherals
+  - Step 3ms/3ms, settling 8ms, motor spin-up 500ms
+  - DIP switch mode flags (debug/write/greasweasel)
+  - WP pin + DIP switch write-protect layering
+
+DONE: basic write support
+  - MFM encoder: 512 bytes -> half-cell bitstream
+  - Write PIO: precise WDATA pulses at 500kbps
+  - write_physical_sector: hunt ID -> assert WGATE -> write -> deassert
+  - SCSI WRITE(10) callback
+  - Write protect: WP pin (primary) + DIP switch (secondary)
+
+TODO: low-level track formatting (write new ID + data fields)
+TODO: GreaseWeasel raw flux mode (DIP switch bit 2)
+TODO: write-after-read verify pass

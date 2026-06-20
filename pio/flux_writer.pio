@@ -1,0 +1,43 @@
+.program flux_writer
+
+; Generates WDATA flux transition pulses from a half-cell bitstream.
+; Each bit: 0 = no transition (steady HIGH), 1 = transition (LOW pulse).
+;
+; Clock: system / 10 = 20 MHz (50ns per cycle)
+; Half-cell: 1000ns = 20 PIO cycles at 20 MHz
+; Pulse LOW: 200ns = 4 cycles,  Gap HIGH: 800ns = 16 cycles
+
+.wrap_target
+    out x, 1              ; 1   shift next bit from OSR into X[0]
+    jmp !x, no_pulse      ; 2   if bit == 0, skip pulse
+
+    ; Transition: produce a ~200ns LOW pulse then return HIGH
+    set pins, 0           ; 3   WDATA LOW
+    nop [2]               ; 4-5 wait (total LOW = 4 cycles = 200ns)
+    set pins, 1           ; 6   WDATA HIGH
+    nop [12]              ; 7-19 wait (total HIGH = 14 cycles = 700ns)
+                           ;     + out+jmp = 2 → 20 cycles total ✓
+
+no_pulse:
+    nop [17]              ; 3-20 wait (18 cycles + out+jmp = 20 ✓)
+
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void flux_writer_program_init(PIO pio, uint sm, uint offset,
+                                             uint pin_wdata) {
+    pio_sm_config c = flux_writer_program_get_default_config(offset);
+
+    sm_config_set_out_pins(&c, pin_wdata, 1);
+    sm_config_set_set_pins(&c, pin_wdata, 1);
+    pio_gpio_init(pio, pin_wdata);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_wdata, 1, true);
+
+    sm_config_set_out_shift(&c, true, true, 32);
+    sm_config_set_clkdiv(&c, 10.0f);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}
