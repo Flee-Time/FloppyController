@@ -11,6 +11,7 @@ void debug_serial_write(const char* str);
 void debug_serial_write_hex32(uint32_t val);
 void debug_serial_write_dec32(uint32_t val);
 void debug_serial_flush(void);
+char debug_serial_read(void);
 
 #ifdef __cplusplus
 }

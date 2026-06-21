@@ -8,12 +8,12 @@
 #include "flux_reader.pio.h"
 #include "flux_writer.pio.h"
 
-int current_track = -1;
+volatile int current_track = -1;
 static uint8_t current_head = 0xFF;
 
 PIO flux_pio = pio0;
-uint flux_sm;
-uint write_sm;
+volatile uint flux_sm;
+volatile uint write_sm;
 
 void init_hardware() {
     gpio_init(PIN_DRVSB); gpio_set_dir(PIN_DRVSB, GPIO_OUT); gpio_put(PIN_DRVSB, 1);

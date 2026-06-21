@@ -3,11 +3,11 @@
 #include <stdbool.h>
 #include "hardware/pio.h"
 
-extern int current_track;
+extern volatile int current_track;
 
 extern PIO flux_pio;
-extern uint flux_sm;
-extern uint write_sm;
+extern volatile uint flux_sm;
+extern volatile uint write_sm;
 
 void init_hardware();
 void drive_select(bool active);

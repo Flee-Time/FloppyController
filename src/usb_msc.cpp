@@ -6,11 +6,21 @@
 #include "debug_serial.h"
 #include "led_drv.h"
 #include "hw_config.h"
+#include "floppy_hw.h"
 #include <string.h>
+
+static bool format_in_progress = false;
 
 extern "C" {
     bool tud_msc_test_unit_ready_cb(uint8_t lun) {
         (void) lun;
+
+        if (core1_format_request) {
+            if (mode_has(MODE_DEBUG_SERIAL))
+                debug_serial_write("[I] TUR: format in progress\r\n");
+            tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x04, 0x04);
+            return false;
+        }
 
         if (!disk_present) {
             if (mode_has(MODE_DEBUG_SERIAL))
@@ -179,6 +189,14 @@ extern "C" {
             }
             case 0x1E:
                 resplen = 0; break;
+            case 0x04:
+            {
+                if (mode_has(MODE_DEBUG_SERIAL))
+                    debug_serial_write("[I] SCSI FORMAT UNIT\r\n");
+                scsi_format_requested = true;
+                resplen = 0;
+                break;
+            }
             case 0x1B:
                 resplen = 0; break;
             case 0x00:

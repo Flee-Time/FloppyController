@@ -7,6 +7,7 @@
 #include "floppy_hw.h"
 #include "hw_config.h"
 #include "shared_state.h"
+#include <cstring>
 
 bool write_physical_sector(uint8_t target_cyl, uint8_t target_head,
                            uint8_t target_sec, const uint8_t* data) {
@@ -105,7 +106,7 @@ bool write_physical_sector(uint8_t target_cyl, uint8_t target_head,
     // 4.  Assert WGATE, wait for write current to stabilise, then start
     //     the write PIO and feed the remaining bitstream.
     write_gate(true);
-    sleep_us(8);
+    sleep_us(100);
     pio_sm_set_enabled(wpio, wsm, true);
 
     int next = 8;
@@ -119,6 +120,54 @@ bool write_physical_sector(uint8_t target_cyl, uint8_t target_head,
     //     The last word encodes the CRC + minimal padding — WGATE must
     //     drop before the gap ends so the next sector isn't erased.
     while (!pio_sm_is_tx_fifo_empty(wpio, wsm)) tight_loop_contents();
+    sleep_us(10);
+    pio_sm_set_enabled(wpio, wsm, false);
+    write_gate(false);
+
+    return true;
+}
+
+bool format_physical_track(uint8_t cyl, uint8_t head) {
+    #define FORMAT_MAX_WORDS 6500
+    static uint32_t track_buf[FORMAT_MAX_WORDS];
+    int total_words = format_track_encode(cyl, head, track_buf, FORMAT_MAX_WORDS);
+    if (total_words <= 0 || total_words > FORMAT_MAX_WORDS)
+        return false;
+
+    PIO wpio = pio1;
+    uint wsm = write_sm;
+    pio_sm_set_enabled(wpio, wsm, false);
+    pio_sm_clear_fifos(wpio, wsm);
+    pio_sm_restart(wpio, wsm);
+
+    for (int i = 0; i < 8 && i < total_words; i++)
+        pio_sm_put(wpio, wsm, track_buf[i]);
+
+    {
+        int timeout = 0;
+        while (gpio_get(PIN_INDEX) == 1) {
+            sleep_us(50);
+            if (++timeout > 20000) return false;
+        }
+        while (gpio_get(PIN_INDEX) == 0) {
+            sleep_us(50);
+            if (++timeout > 20000) return false;
+        }
+    }
+
+    write_gate(true);
+    sleep_us(100);
+    pio_sm_set_enabled(wpio, wsm, true);
+
+    int next = 8;
+    while (next < total_words) {
+        if (!pio_sm_is_tx_fifo_full(wpio, wsm)) {
+            pio_sm_put(wpio, wsm, track_buf[next++]);
+        }
+    }
+
+    while (!pio_sm_is_tx_fifo_empty(wpio, wsm))
+        tight_loop_contents();
     sleep_us(10);
     pio_sm_set_enabled(wpio, wsm, false);
     write_gate(false);

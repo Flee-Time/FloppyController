@@ -8,14 +8,29 @@ DONE: reading is robust.
   - Step 3ms/3ms, settling 8ms, motor spin-up 500ms
   - DIP switch mode flags (debug/write/greasweasel)
   - WP pin + DIP switch write-protect layering
+  - Composite USB device (MSC + CDC ACM)
+  - DEBUG.md reference for serial output
 
-DONE: basic write support
-  - MFM encoder: 512 bytes -> half-cell bitstream
-  - Write PIO: precise WDATA pulses at 500kbps
-  - write_physical_sector: hunt ID -> assert WGATE -> write -> deassert
-  - SCSI WRITE(10) callback
-  - Write protect: WP pin (primary) + DIP switch (secondary)
+DONE: write corruption fixes (4 bugs)
+  1. emit_byte_a1() bit4: clock present [1,0] → should be absent [0,0]
+     (prev=1 from bit5=1, so clock must be 0).  Fixed in mfm_encoder.cpp.
+  2. PIO out_shift direction: shift_right=true output LSB-first but
+     encoder packs MSB-first, reversing every 32-bit word.  Fixed in
+     flux_writer.pio (changed to shift_right=false).
+  3. Second CRC byte prev chaining: used (crc>>7)&1 instead of
+     (crc>>8)&1, wrong clock context for LSB CRC byte.  Fixed.
+  4. PIO clock divider: clkdiv=10 gave 1us half-cells, but decoder
+     PLL=200 targets 2us.  Changed to clkdiv=20.  Fixed.
 
-TODO: low-level track formatting (write new ID + data fields)
+DONE: low-level track formatting
+  - format_track_encode(): IBM-format track with 18 sectors, proper
+    gaps (GAP4a 80, GAP1 50, GAP2 22, GAP3 66), 0xE5 data fill,
+    CRC-16/CCITT on ID and data fields.
+  - format_physical_track(): syncs on INDEX, writes full track in
+    one revolution via PIO.
+  - Debug serial command 'F' triggers full-disk format (80×2 tracks).
+  - Progress output on CDC ACM serial.
+  - tud_task() runs during track waits to keep USB alive.
+
 TODO: GreaseWeasel raw flux mode (DIP switch bit 2)
 TODO: write-after-read verify pass

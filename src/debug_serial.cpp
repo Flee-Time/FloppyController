@@ -3,6 +3,10 @@
 #include <string.h>
 #include <stdio.h>
 
+static char rx_ring[64];
+static volatile uint8_t rx_head = 0;
+static volatile uint8_t rx_tail = 0;
+
 static void debug_putc(char c) {
     if (!tud_cdc_connected()) return;
     tud_cdc_write_char(c);
@@ -73,6 +77,13 @@ void debug_serial_flush(void) {
     }
 }
 
+char debug_serial_read(void) {
+    if (rx_head == rx_tail) return 0;
+    char c = rx_ring[rx_tail];
+    rx_tail = (rx_tail + 1) % sizeof(rx_ring);
+    return c;
+}
+
 // --- TinyUSB CDC Callbacks ---
 extern "C" {
 
@@ -89,5 +100,14 @@ void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const* coding) {
 
 void tud_cdc_rx_cb(uint8_t itf) {
     (void) itf;
+    char buf[32];
+    uint32_t count = tud_cdc_read(buf, sizeof(buf));
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t next = (rx_head + 1) % sizeof(rx_ring);
+        if (next != rx_tail) {
+            rx_ring[rx_head] = buf[i];
+            rx_head = next;
+        }
+    }
 }
 }

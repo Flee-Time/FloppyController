@@ -79,18 +79,18 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
                 continue;
             }
 
-            if (in_sync && bit_count == 16) {
-                uint8_t data_byte = 0;
-                if (shift_reg & 0x4000) data_byte |= 0x80;
-                if (shift_reg & 0x1000) data_byte |= 0x40;
-                if (shift_reg & 0x0400) data_byte |= 0x20;
-                if (shift_reg & 0x0100) data_byte |= 0x10;
-                if (shift_reg & 0x0040) data_byte |= 0x08;
-                if (shift_reg & 0x0010) data_byte |= 0x04;
-                if (shift_reg & 0x0004) data_byte |= 0x02;
-                if (shift_reg & 0x0001) data_byte |= 0x01;
+                if (in_sync && bit_count == 16) {
+                    uint8_t data_byte = 0;
+                    if (shift_reg & 0x4000) data_byte |= 0x80;
+                    if (shift_reg & 0x1000) data_byte |= 0x40;
+                    if (shift_reg & 0x0400) data_byte |= 0x20;
+                    if (shift_reg & 0x0100) data_byte |= 0x10;
+                    if (shift_reg & 0x0040) data_byte |= 0x08;
+                    if (shift_reg & 0x0010) data_byte |= 0x04;
+                    if (shift_reg & 0x0004) data_byte |= 0x02;
+                    if (shift_reg & 0x0001) data_byte |= 0x01;
 
-                bit_count = 0;
+                    bit_count = 0;
 
                 if (state == HUNT_ID) {
                     if (data_byte == 0xFE) { state = READ_ID; byte_index = 0; }
