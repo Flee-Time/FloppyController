@@ -11,6 +11,30 @@
 volatile int current_track = -1;
 static uint8_t current_head = 0xFF;
 
+static uint32_t g_select_delay_us = 0;
+static uint32_t g_step_delay_ms = 3;
+static uint32_t g_settle_time_ms = 15;
+static uint32_t g_motor_delay_ms = 600;
+static uint32_t g_watchdog_ms = 10000;
+static uint32_t g_pre_write_us = 2000;
+static uint32_t g_post_write_us = 2000;
+static uint32_t g_index_mask_us = 5000;
+
+void floppy_set_select_delay_us(uint32_t us) { g_select_delay_us = us; }
+void floppy_set_step_delay_ms(uint32_t ms) { g_step_delay_ms = ms; }
+void floppy_set_settle_time_ms(uint32_t ms) { g_settle_time_ms = ms; }
+void floppy_set_motor_delay_ms(uint32_t ms) { g_motor_delay_ms = ms; }
+void floppy_set_watchdog_ms(uint32_t ms) { g_watchdog_ms = ms; }
+uint32_t floppy_get_motor_delay_ms(void) { return g_motor_delay_ms; }
+uint32_t floppy_get_watchdog_ms(void) { return g_watchdog_ms; }
+
+void floppy_set_pre_write_us(uint32_t us) { g_pre_write_us = us; }
+void floppy_set_post_write_us(uint32_t us) { g_post_write_us = us; }
+void floppy_set_index_mask_us(uint32_t us) { g_index_mask_us = us; }
+uint32_t floppy_get_pre_write_us(void) { return g_pre_write_us; }
+uint32_t floppy_get_post_write_us(void) { return g_post_write_us; }
+uint32_t floppy_get_index_mask_us(void) { return g_index_mask_us; }
+
 PIO flux_pio = pio0;
 volatile uint flux_sm;
 volatile uint write_sm;
@@ -25,6 +49,8 @@ void init_hardware() {
 
     gpio_init(PIN_WDATA); gpio_set_dir(PIN_WDATA, GPIO_OUT); gpio_put(PIN_WDATA, 1);
     gpio_init(PIN_WGATE); gpio_set_dir(PIN_WGATE, GPIO_OUT); gpio_put(PIN_WGATE, 1);
+
+    gpio_init(PIN_DENSITY); gpio_set_dir(PIN_DENSITY, GPIO_OUT); gpio_put(PIN_DENSITY, 0); // DD default
 
     gpio_init(PIN_INDEX);  gpio_set_dir(PIN_INDEX,  GPIO_IN); gpio_pull_up(PIN_INDEX);
     gpio_init(PIN_TRACK0); gpio_set_dir(PIN_TRACK0, GPIO_IN); gpio_pull_up(PIN_TRACK0);
@@ -43,6 +69,7 @@ void init_hardware() {
 
 void drive_select(bool active) {
     gpio_put(PIN_DRVSB, !active);
+    if (active && g_select_delay_us) sleep_us(g_select_delay_us);
 }
 
 void drive_motor(bool active) {
@@ -52,9 +79,9 @@ void drive_motor(bool active) {
 void drive_step(bool direction_in) {
     gpio_put(PIN_DIR, direction_in ? 0 : 1);
     gpio_put(PIN_STEP, 0);
-    sleep_ms(3);
+    sleep_ms(g_step_delay_ms);
     gpio_put(PIN_STEP, 1);
-    sleep_ms(3);
+    sleep_ms(g_step_delay_ms);
 }
 
 void seek_track_0() {
@@ -83,8 +110,10 @@ void seek_physical_track(uint8_t target_track, uint8_t target_head) {
     gpio_put(PIN_SIDE1, (target_head == 0) ? 1 : 0);
     current_head = target_head;
 
+    uint32_t settle = g_settle_time_ms;
+
     if (target_track == current_track) {
-        if (head_changed) sleep_ms(8);
+        if (head_changed) sleep_ms(settle);
         return;
     }
 
@@ -97,7 +126,7 @@ void seek_physical_track(uint8_t target_track, uint8_t target_head) {
     }
 
     current_track = target_track;
-    sleep_ms(8);
+    sleep_ms(settle);
 }
 
 #define DISK_PROBE_INTERVAL_MS 2000
@@ -162,4 +191,8 @@ void poll_disk_change(uint32_t now) {
 
 void write_gate(bool active) {
     gpio_put(PIN_WGATE, !active);
+}
+
+void set_density(bool high) {
+    gpio_put(PIN_DENSITY, high ? 1 : 0);
 }

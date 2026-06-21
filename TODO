@@ -12,25 +12,98 @@ DONE: reading is robust.
   - DEBUG.md reference for serial output
 
 DONE: write corruption fixes (4 bugs)
-  1. emit_byte_a1() bit4: clock present [1,0] → should be absent [0,0]
-     (prev=1 from bit5=1, so clock must be 0).  Fixed in mfm_encoder.cpp.
+  1. emit_byte_a1() bit4: clock present [1,0] -> should be absent [0,0]
   2. PIO out_shift direction: shift_right=true output LSB-first but
-     encoder packs MSB-first, reversing every 32-bit word.  Fixed in
-     flux_writer.pio (changed to shift_right=false).
-  3. Second CRC byte prev chaining: used (crc>>7)&1 instead of
-     (crc>>8)&1, wrong clock context for LSB CRC byte.  Fixed.
+     encoder packs MSB-first, reversing every 32-bit word.
+  3. Second CRC byte prev chaining: used (crc>>7)&1 instead of (crc>>8)&1
   4. PIO clock divider: clkdiv=10 gave 1us half-cells, but decoder
-     PLL=200 targets 2us.  Changed to clkdiv=20.  Fixed.
+     PLL=200 targets 2us. Changed to clkdiv=20.
 
-DONE: low-level track formatting
-  - format_track_encode(): IBM-format track with 18 sectors, proper
-    gaps (GAP4a 80, GAP1 50, GAP2 22, GAP3 66), 0xE5 data fill,
-    CRC-16/CCITT on ID and data fields.
-  - format_physical_track(): syncs on INDEX, writes full track in
-    one revolution via PIO.
-  - Debug serial command 'F' triggers full-disk format (80×2 tracks).
-  - Progress output on CDC ACM serial.
-  - tud_task() runs during track waits to keep USB alive.
+DONE: GreaseWeasel raw flux mode (DIP bit 2)
+  - Full GW protocol via CDC ACM: 22 commands implemented
+  - Flux read (CMD_READ_FLUX): index-synced + ticks_limit + RPM modes
+  - Revs-based capture with 160KB RAM buffer, greasepack encoding
+  - Hardware GPIO IRQ-based index pulse detection
+  - IRQ-based index detection restored in revs-based capture (was polling)
+  - Pin-level noise filter on index accept (gpio_get==0 check)
+  - gw read: working on all tracks, sectors decoding confirmed
+  - RPM mode: correct on all disks (synthetic flux from index pulse timing,
+    avoids RDATA-to-INDEX crosstalk by not using real PIO flux data)
+  - gw seek / gw info: functional
+  - SET_PARAMS / GET_PARAMS: 8x uint16 delay parameters implemented
+  - GET_INDEX_TIMES: proper implementation
+  - ERASE_FLUX: write-protect check + configurable motor delay
+  - FluxEngine: reads and decodes sectors
+  - USB descriptors: VID 0x1209 PID 0x4d69, "gw-compat" product string
+  - Serial number from RP2040 unique board ID
+  - 10s motor auto-off watchdog
+  - CDC TX buffer increased to 512 bytes
 
-TODO: GreaseWeasel raw flux mode (DIP switch bit 2)
-TODO: write-after-read verify pass
+DONE: CMD_WRITE_FLUX protocol fixes (2024-06)
+  - greaseunpack 2-byte decoding formula corrected (was base-250, now
+    proper base-255: (data-250)*255+(data2-1)+250)
+  - gw_init_writer: only disables SM if currently claimed
+  - TX FIFO pre-load: single short pulse (~4.7us) instead of 4x1.3ms
+  - dv minimum clamp: dv<2 -> dv=2 (prevents PIO jmp x-- infinite loop)
+  - WDATA restored to HIGH after write (was left LOW by stalled PIO)
+  - gw_writer SM fully released (unclaimed + program removed) after write
+  - Write-to-read recovery delay: 200ms sleep after WGATE drop
+  - Read capture loops: added 5s deadline timeouts (prevents lockups)
+  - Revs-based capture: restored hardware IRQ index detection (was polling)
+  - Revs-based capture: added gpio_get(PIN_INDEX)==0 noise filter to
+    prevent RDATA crosstalk glitches from being accepted as index pulses
+
+IN PROGRESS: write verifies correctly but immediate read-after-write fails
+  - WRITE PRODUCES CORRECT DATA ON DISK: reset-and-read verifies
+    all 18 sectors with correct checksums. The gw_writer PIO and
+    greasepack encoding/decoding are working correctly.
+  - IMMEDIATE READ-AFTER-WRITE FAILS: The verify step captures only
+    ~8-9 sectors (half the track). Read captures ~89ms of data vs
+    expected 199ms full revolution.
+  - Tried: 5ms/20ms/200ms passive recovery sleep after write (no change)
+  - Tried: deselect/reselect drive cycle (shifted alignment, no improvement)
+  - Tried: gw_sample_freq at 200MHz (broke reads entirely)
+  - Hypothesis: The read amplifier physically saturates during the write
+    and needs more recovery time than practical for a tight verify loop.
+    May need active write-to-read transition (e.g. dummy read to exercise
+    the amp before the real verify).
+  - Alternative: Issue may be in the host software's choice of ticks_limit
+    for the verify step (FluxEngine uses revs=0 with ticks_limit mode).
+    The host may be computing a ticks_limit value that captures only
+    half a revolution.
+
+BUG: Any write path corrupts surrounding sectors on formatted disks.
+  Both MSC-mode writes (write_physical_sector via flux_writer PIO)
+  and GW-mode writes (cmd_write_flux via gw_writer PIO) damage
+  adjacent sectors on already-formatted media.
+  Suspected causes:
+  - WGATE timing: write gate may overlap into next sector's header/gap
+    if the bitstream timing doesn't match the physical sector spacing
+  - write_physical_sector() does not verify ID CRC before writing;
+    only checks C:H:S match. A corrupted ID header could misdirect a write
+  - write_physical_sector() and format_physical_track() have no
+    write-to-read recovery delay after WGATE drop
+  - format_physical_track() (low-level format) has additional bugs:
+    bp_flush() does not zero-fill the partial final 32-bit word (garbage
+    bits in unused positions become spurious flux transitions).
+    No GAP4b (trailing fill) after sector 18 — WGATE drops at end of
+    sector 18's GAP3, leaving an unterminated splice.
+    emit_byte_a1() in the streaming BitPacker doesn't propagate prev_data
+    correctly — each A1 resets the clock-encoding context, potentially
+    inserting phantom clock bits on the following byte.
+
+DROPPED (faulty, known hardware issue):
+  - Index RPM detection via real PIO flux data on formatted disks:
+    shows ~2500 RPM instead of ~350. Suspected RDATA-to-INDEX crosstalk
+    on GPIO pins. Works correctly on zero-filled/unformatted media.
+    FIXED by using RPM mode (revs=2, ticks_limit=0) which measures
+    index pulse interval via time_us_32() polling and generates
+    synthetic flux data instead of reading real PIO values.
+
+TODO:
+  - Fix immediate read-after-write verify (CMD_WRITE_FLUX + CMD_READ_FLUX)
+  - Fix write corruption of adjacent sectors on formatted disks
+    (both MSC write_physical_sector and GW cmd_write_flux)
+  - Fix low-level track formatting corruption
+    (GAP4b, bp_flush zero-fill, A1 prev_data propagation)
+  - Multi-revolution flux reads (streaming with DMA)

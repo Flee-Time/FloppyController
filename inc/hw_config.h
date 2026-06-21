@@ -19,6 +19,9 @@
 #define PIN_RDATA  3
 #define PIN_DSKCHG 4
 
+// --- Density Select ---
+#define PIN_DENSITY 12
+
 // --- UI & Configuration ---
 #define PIN_DIP_1 27
 #define PIN_DIP_2 26

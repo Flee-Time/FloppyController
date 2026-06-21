@@ -100,14 +100,7 @@ void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const* coding) {
 
 void tud_cdc_rx_cb(uint8_t itf) {
     (void) itf;
-    char buf[32];
-    uint32_t count = tud_cdc_read(buf, sizeof(buf));
-    for (uint32_t i = 0; i < count; i++) {
-        uint8_t next = (rx_head + 1) % sizeof(rx_ring);
-        if (next != rx_tail) {
-            rx_ring[rx_head] = buf[i];
-            rx_head = next;
-        }
-    }
+    // Don't consume data here — let the main loop read it directly.
+    // The ring buffer is only for debug serial command mode.
 }
 }

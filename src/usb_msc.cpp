@@ -16,21 +16,21 @@ extern "C" {
         (void) lun;
 
         if (core1_format_request) {
-            if (mode_has(MODE_DEBUG_SERIAL))
+            if (mode_has_debug())
                 debug_serial_write("[I] TUR: format in progress\r\n");
             tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x04, 0x04);
             return false;
         }
 
         if (!disk_present) {
-            if (mode_has(MODE_DEBUG_SERIAL))
+            if (mode_has_debug())
                 debug_serial_write("[I] TUR: no disk\r\n");
             tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3a, 0x00);
             return false;
         }
 
         if (sense_media_changed) {
-            if (mode_has(MODE_DEBUG_SERIAL))
+            if (mode_has_debug())
                 debug_serial_write("[I] TUR: media changed\r\n");
             sense_media_changed = false;
             tud_msc_set_sense(lun, SCSI_SENSE_UNIT_ATTENTION, 0x28, 0x00);
@@ -56,7 +56,7 @@ extern "C" {
         uint32_t block_count = bufsize / 512;
         uint8_t* ptr = (uint8_t*) buffer;
 
-        if (mode_has(MODE_DEBUG_SERIAL)) {
+        if (mode_has_debug()) {
             debug_serial_write("[I] READ lba=");
             debug_serial_write_dec32(lba);
             debug_serial_write(" n=");
@@ -74,7 +74,7 @@ extern "C" {
             uint32_t wait_start = to_ms_since_boot(get_absolute_time());
             while (!core1_result_ready) {
                 if (to_ms_since_boot(get_absolute_time()) - wait_start > 5000) {
-                    if (mode_has(MODE_DEBUG_SERIAL))
+                    if (mode_has_debug())
                         debug_serial_write("[E] READ timeout\r\n");
                     tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);
                     core1_request_pending = false;
@@ -90,7 +90,7 @@ extern "C" {
                 sleep_ms(80);
                 led_set_rgb(0, 0, 0);
 
-                if (mode_has(MODE_DEBUG_SERIAL)) {
+                if (mode_has_debug()) {
                     debug_serial_write("[W] READ fail lba=");
                     debug_serial_write_dec32(lba + i);
                     debug_serial_write(" pr=");
@@ -119,12 +119,12 @@ extern "C" {
         (void) lun; (void) offset;
 
         // Belt and braces: refuse if write-protected or DIP-locked.
-        if (gpio_get(PIN_WP) == 0 || !mode_has(MODE_WRITE_ENABLE))
+        if (gpio_get(PIN_WP) == 0 || !mode_has_write())
             return -1;
 
         uint32_t block_count = bufsize / 512;
 
-        if (mode_has(MODE_DEBUG_SERIAL)) {
+        if (mode_has_debug()) {
             debug_serial_write("[I] WRITE lba=");
             debug_serial_write_dec32(lba);
             debug_serial_write(" n=");
@@ -144,7 +144,7 @@ extern "C" {
             uint32_t wait_start = to_ms_since_boot(get_absolute_time());
             while (!core1_result_ready) {
                 if (to_ms_since_boot(get_absolute_time()) - wait_start > 5000) {
-                    if (mode_has(MODE_DEBUG_SERIAL))
+                    if (mode_has_debug())
                         debug_serial_write("[E] WRITE timeout\r\n");
                     core1_request_pending = false;
                     core1_write_request = false;
@@ -157,7 +157,7 @@ extern "C" {
             core1_write_request = false;
 
             if (!core1_result_success) {
-                if (mode_has(MODE_DEBUG_SERIAL))
+                if (mode_has_debug())
                     debug_serial_write("[W] WRITE fail\r\n");
                 return -1;
             }
@@ -191,7 +191,7 @@ extern "C" {
                 resplen = 0; break;
             case 0x04:
             {
-                if (mode_has(MODE_DEBUG_SERIAL))
+                if (mode_has_debug())
                     debug_serial_write("[I] SCSI FORMAT UNIT\r\n");
                 scsi_format_requested = true;
                 resplen = 0;
@@ -202,7 +202,7 @@ extern "C" {
             case 0x00:
                 resplen = 0; break;
             default:
-                if (mode_has(MODE_DEBUG_SERIAL)) {
+                if (mode_has_debug()) {
                     debug_serial_write("[W] SCSI unk op=");
                     debug_serial_write_hex32(scsi_cmd[0]);
                     debug_serial_write("\r\n");
@@ -226,7 +226,7 @@ extern "C" {
         if (gpio_get(PIN_WP) == 0) return false;
 
         // DIP switch acts as a secondary software lock.
-        if (!mode_has(MODE_WRITE_ENABLE)) return false;
+        if (!mode_has_write()) return false;
 
         return true;
     }

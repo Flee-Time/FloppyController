@@ -1,0 +1,36 @@
+.program gw_writer
+
+; Wrap-based flux writer (Adafruit design)
+; Clock target: 50 MHz (sysclk/4 at 200MHz) = 20ns per cycle
+; LOW pulse: 33 cycles = 660ns
+; Total period: x + 34 cycles
+; Conversion: dv = val / 2 - 34
+
+.wrap_target
+loop_flux:
+    set pins, 0        ; 1   drive WDATA LOW
+    out x, 16          ; 2   get delay value from TX FIFO (may block)
+    nop [14]           ; 3-17 extra LOW time (15 cycles)
+    nop [14]           ; 18-32 extra LOW time (15 cycles)
+    set pins, 1        ; 33  drive WDATA HIGH
+loop_high:
+    jmp x--, loop_high ; 34+ decrement x and loop/wrap
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+#include "pico/stdlib.h"
+
+static inline void gw_writer_program_init(PIO pio, uint sm, uint offset,
+                                           uint pin_wdata) {
+    pio_sm_config c = gw_writer_program_get_default_config(offset);
+    sm_config_set_set_pins(&c, pin_wdata, 1);
+    sm_config_set_out_shift(&c, true, true, 16);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    pio_gpio_init(pio, pin_wdata);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_wdata, 1, true);
+    pio_sm_set_pins_with_mask(pio, sm, 1u << pin_wdata, 1u << pin_wdata);
+    sm_config_set_clkdiv(&c, 4.0f);
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

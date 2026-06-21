@@ -46,12 +46,14 @@ add_executable(FloppyController
     src/mfm_writer.cpp
     src/mode_config.cpp
     src/debug_serial.cpp
+    src/gw/gw_proto.cpp
 )
 
 # Generate C++ headers from the PIO assembly files
 pico_generate_pio_header(FloppyController ${CMAKE_CURRENT_LIST_DIR}/pio/flux_reader.pio)
 pico_generate_pio_header(FloppyController ${CMAKE_CURRENT_LIST_DIR}/pio/ws2812.pio)
 pico_generate_pio_header(FloppyController ${CMAKE_CURRENT_LIST_DIR}/pio/flux_writer.pio)
+pico_generate_pio_header(FloppyController ${CMAKE_CURRENT_LIST_DIR}/pio/gw_writer.pio)
 
 pico_set_program_name(FloppyController "FloppyController")
 pico_set_program_version(FloppyController "0.1")
