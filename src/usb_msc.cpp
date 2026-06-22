@@ -109,7 +109,7 @@ extern "C" {
                 return -1;
             }
 
-            memcpy(ptr, shared_sector_buffer, 512);
+            memcpy(ptr, (const uint8_t*)shared_sector_buffer, 512);
             ptr += 512;
         }
         return bufsize;
@@ -133,7 +133,7 @@ extern "C" {
         }
 
         for (uint32_t i = 0; i < block_count; i++) {
-            memcpy(shared_sector_buffer, buffer + i * 512, 512);
+            memcpy((uint8_t*)shared_sector_buffer, buffer + i * 512, 512);
             shared_target_lba = lba + i;
             core1_result_ready = false;
             core1_write_request = true;

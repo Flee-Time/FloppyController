@@ -38,6 +38,7 @@ uint32_t floppy_get_index_mask_us(void) { return g_index_mask_us; }
 PIO flux_pio = pio0;
 volatile uint flux_sm;
 volatile uint write_sm;
+volatile uint write_offset;
 
 void init_hardware() {
     gpio_init(PIN_DRVSB); gpio_set_dir(PIN_DRVSB, GPIO_OUT); gpio_put(PIN_DRVSB, 1);
@@ -63,7 +64,7 @@ void init_hardware() {
     flux_reader_program_init(flux_pio, flux_sm, flux_offset, PIN_RDATA);
 
     write_sm = pio_claim_unused_sm(pio1, true);
-    uint write_offset = pio_add_program(pio1, &flux_writer_program);
+    write_offset = pio_add_program(pio1, &flux_writer_program);
     flux_writer_program_init(pio1, write_sm, write_offset, PIN_WDATA);
 }
 
@@ -104,6 +105,10 @@ void seek_track_0() {
 
 
 void seek_physical_track(uint8_t target_track, uint8_t target_head) {
+    if (force_recalibrate) {
+        seek_track_0();
+        force_recalibrate = false;
+    }
     if (current_track == -1) seek_track_0();
 
     bool head_changed = (target_head != current_head);

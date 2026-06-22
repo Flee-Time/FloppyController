@@ -12,6 +12,11 @@
 
 int mfm_encode_sector(const uint8_t data[512], uint32_t* output);
 
+// Encodes only the data+CRC portion (no sync/A1/DAM preamble).
+// Used for write_physical_sector which times the write to start
+// right after the existing 0xFB DAM on the track.
+int mfm_encode_sector_data(const uint8_t data[512], uint32_t* output);
+
 // Encodes a full IBM-format track (18 sectors × 512 bytes) for the
 // given cylinder and head.  Includes GAP4a, GAP1, SYNC, ID AM, ID
 // field with CRC, GAP2, SYNC, Data AM, 0xE5 data fill with CRC, and

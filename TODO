@@ -53,57 +53,51 @@ DONE: CMD_WRITE_FLUX protocol fixes (2024-06)
   - Revs-based capture: added gpio_get(PIN_INDEX)==0 noise filter to
     prevent RDATA crosstalk glitches from being accepted as index pulses
 
-IN PROGRESS: write verifies correctly but immediate read-after-write fails
-  - WRITE PRODUCES CORRECT DATA ON DISK: reset-and-read verifies
-    all 18 sectors with correct checksums. The gw_writer PIO and
-    greasepack encoding/decoding are working correctly.
-  - IMMEDIATE READ-AFTER-WRITE FAILS: The verify step captures only
-    ~8-9 sectors (half the track). Read captures ~89ms of data vs
-    expected 199ms full revolution.
-  - Tried: 5ms/20ms/200ms passive recovery sleep after write (no change)
-  - Tried: deselect/reselect drive cycle (shifted alignment, no improvement)
-  - Tried: gw_sample_freq at 200MHz (broke reads entirely)
-  - Hypothesis: The read amplifier physically saturates during the write
-    and needs more recovery time than practical for a tight verify loop.
-    May need active write-to-read transition (e.g. dummy read to exercise
-    the amp before the real verify).
-  - Alternative: Issue may be in the host software's choice of ticks_limit
-    for the verify step (FluxEngine uses revs=0 with ticks_limit mode).
-    The host may be computing a ticks_limit value that captures only
-    half a revolution.
+FIXED (2024-06-22): immediate read-after-write verify failure
+  - Root cause: `cc` (capture index) was `uint16_t`, silently wrapping at
+    65535. The buffer-limit check `cc < GW_FLUX_CAP_WORDS (80000)` was
+    always true because cc wrapped before reaching 80000. The buffer
+    endlessly self-overwrote, and only the last ~65536 entries (~89ms)
+    were sent to the host.
+  - Fix: changed `cc` from `uint16_t` to `uint32_t` in all three capture
+    paths (ticks-limit, revs-based, RPM-mode).
+  - Buffer increased: 80000 → 105000 entries (210KB) provides ~210ms
+    at typical 2us pulse density, covering a full revolution with margin.
+  - Cleanup: removed experimental code. Post-write sleep set to 20ms.
 
-BUG: Any write path corrupts surrounding sectors on formatted disks.
-  Both MSC-mode writes (write_physical_sector via flux_writer PIO)
-  and GW-mode writes (cmd_write_flux via gw_writer PIO) damage
-  adjacent sectors on already-formatted media.
-  Suspected causes:
-  - WGATE timing: write gate may overlap into next sector's header/gap
-    if the bitstream timing doesn't match the physical sector spacing
-  - write_physical_sector() does not verify ID CRC before writing;
-    only checks C:H:S match. A corrupted ID header could misdirect a write
-  - write_physical_sector() and format_physical_track() have no
-    write-to-read recovery delay after WGATE drop
-  - format_physical_track() (low-level format) has additional bugs:
-    bp_flush() does not zero-fill the partial final 32-bit word (garbage
-    bits in unused positions become spurious flux transitions).
-    No GAP4b (trailing fill) after sector 18 — WGATE drops at end of
-    sector 18's GAP3, leaving an unterminated splice.
-    emit_byte_a1() in the streaming BitPacker doesn't propagate prev_data
-    correctly — each A1 resets the clock-encoding context, potentially
-    inserting phantom clock bits on the following byte.
+DONE: MSC cross-core robustness
+  - shared_sector_buffer now volatile (prevents compiler reordering
+    across __dmb() barriers)
+  - force_recalibrate flag replaces direct cross-core write to current_track
+  - Removed dead shared variables (shared_fmt_rd_ok, gw_busy, etc.)
+  - ID CRC validation added for write_physical_sector sector header match
+  - Pre-write / post-write delays use configurable values
+  - GAP4b fill added to format_track_encode, bp_flush zero-fill fix
+  - MSC read robustness: sync-loss hysteresis (4 consecutive bad pulses),
+    1000ms timeout, jiggle retry (step away+back on second failure)
+  - Sector cache: single-sector read cache for FAT/directory re-reads
+  - set_density(true) on motor start for HD density
 
-DROPPED (faulty, known hardware issue):
-  - Index RPM detection via real PIO flux data on formatted disks:
-    shows ~2500 RPM instead of ~350. Suspected RDATA-to-INDEX crosstalk
-    on GPIO pins. Works correctly on zero-filled/unformatted media.
-    FIXED by using RPM mode (revs=2, ticks_limit=0) which measures
-    index pulse interval via time_us_32() polling and generates
-    synthetic flux data instead of reading real PIO values.
+DONE: GW RPM mode restored for rotational period measurement
+  - time_us_32() polling gives deterministic RPM (no PIO FIFO latency)
+  - Multi-rev data reads still use real PIO + hardware IRQ index detection
+
+NUKED: MSC write path (write_physical_sector / format_physical_track)
+  - The flux_writer PIO + MFM encoder produce a repeating 0x9249 pattern
+    on disk regardless of input data. Root cause not found after extensive
+    debugging (tried: PIO shift direction, bit packing order, OSR drain
+    time, full SM reinit, WGATE timing, data-only vs full-sector encoding).
+    Write returns false; GW mode handles all write operations.
+  - TODO: ground-up rewrite of MSC write. Likely need to abandon the
+    flux_writer half-cell approach and use gw_writer-style raw flux
+    timing, or audit the MFM encoder word-packing and PIO output
+    mapping from scratch.
+
+DROPPED (was uint16_t cc bug, not hardware):
+  - Index RPM detection via real PIO flux data showing ~2500 RPM.
+    The cc overflow corrupted index positions and flux data.
+    Fixed by the uint16_t → uint32_t cc change.
 
 TODO:
-  - Fix immediate read-after-write verify (CMD_WRITE_FLUX + CMD_READ_FLUX)
-  - Fix write corruption of adjacent sectors on formatted disks
-    (both MSC write_physical_sector and GW cmd_write_flux)
-  - Fix low-level track formatting corruption
-    (GAP4b, bp_flush zero-fill, A1 prev_data propagation)
+  - Rewrite MSC write path from scratch (flux_writer + mfm_encoder)
   - Multi-revolution flux reads (streaming with DMA)

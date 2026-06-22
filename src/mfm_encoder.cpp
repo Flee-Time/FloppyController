@@ -99,7 +99,41 @@ int mfm_encode_sector(const uint8_t data[512], uint32_t* output) {
     while (bi < bit_count) {
         uint32_t w = 0;
         for (int i = 0; i < 32 && bi < bit_count; i++, bi++) {
-            if (bit_buf[bi]) w |= (1u << (31 - i));
+            if (bit_buf[bi]) w |= (1u << i);
+        }
+        output[word_count++] = w;
+    }
+
+    return word_count;
+}
+
+int mfm_encode_sector_data(const uint8_t data[512], uint32_t* output) {
+    bit_count = 0;
+
+    // CRC-16 over A1×3 + FB + 512 bytes
+    uint8_t crc_buf[4] = {0xA1, 0xA1, 0xA1, 0xFB};
+    uint16_t crc = crc16(crc_buf, 4, 0xFFFF);
+    crc = crc16(data, 512, crc);
+
+    // 512 data bytes (prev = last bit of 0xFB = 1)
+    int prev = 1;
+    for (int i = 0; i < 512; i++)
+        prev = emit_byte_normal(data[i], prev);
+
+    // CRC bytes (MSB first on disk)
+    emit_byte_normal((crc >> 8) & 0xFF, prev);
+    emit_byte_normal(crc & 0xFF, (crc >> 8) & 1);
+
+    // Pad to fill any partial 32-bit word at the end.
+    while (bit_count & 31) emit(0);
+
+    // Pack bits into 32-bit words, MSB first within each word.
+    int word_count = 0;
+    int bi = 0;
+    while (bi < bit_count) {
+        uint32_t w = 0;
+        for (int i = 0; i < 32 && bi < bit_count; i++, bi++) {
+            if (bit_buf[bi]) w |= (1u << i);
         }
         output[word_count++] = w;
     }
@@ -139,6 +173,8 @@ static void bp_emit(BitPacker* bp, uint8_t bit) {
 static void bp_flush(BitPacker* bp) {
     if (bp->bit_pos > 0 && bp->word_count < bp->max_words) {
         bp->output[bp->word_count++] = bp->current_word;
+        bp->current_word = 0;
+        bp->bit_pos = 0;
     }
 }
 
@@ -247,6 +283,10 @@ int format_track_encode(uint8_t cyl, uint8_t head,
         // GAP3: 66 bytes 0x4E
         prev = bp_emit_bytes(&bp, 0x4E, 66, prev);
     }
+
+    // GAP4b: trailing fill to ensure the write covers the full
+    // revolution with margin for rotational speed variation.
+    prev = bp_emit_bytes(&bp, 0x4E, 400, prev);
 
     bp_flush(&bp);
     return bp.word_count;

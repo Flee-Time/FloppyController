@@ -57,7 +57,7 @@ enum {
 };
 
 #define GW_CMD_BUF_MAX   20
-#define GW_FLUX_CAP_WORDS 80000
+#define GW_FLUX_CAP_WORDS 105000
 
 static uint8_t  g_cmd_buf[GW_CMD_BUF_MAX];
 static uint8_t  g_cmd_len;
@@ -342,7 +342,7 @@ static void cmd_read_flux(void) {
     if (revs == 0) {
         if (ticks_limit == 0) ticks_limit = 1000000;
         pio_sm_clear_fifos(flux_pio, flux_sm);
-        uint32_t td = 0; uint16_t cc = 0;
+        uint32_t td = 0; uint32_t cc = 0;
         uint32_t deadline = time_us_32() + (ticks_limit / 100) + 5000000;
         while (td < ticks_limit && cc < GW_FLUX_CAP_WORDS && time_us_32() < deadline) {
             while (!pio_sm_is_rx_fifo_empty(flux_pio, flux_sm) && cc < GW_FLUX_CAP_WORDS) {
@@ -363,10 +363,10 @@ static void cmd_read_flux(void) {
         return;
     }
 
-    // revs-based: index-synced capture
+    // RPM mode (revs=2, ticks_limit=0): uses time_us_32() polling for
+    // deterministic rotational period measurement, avoiding the variable
+    // latency of PIO FIFO drain during revs-based IRQ index detection.
     if (ticks_limit == 0 && revs == 2) {
-        // RPM mode: synthetic flux from time_us_32() measurement
-        // (real flux capture can't interleave INDEX polling with continuous RDATA)
         uint32_t t_sync;
         {
             int to = 0;
@@ -400,7 +400,7 @@ static void cmd_read_flux(void) {
         uint32_t period_us = t_end - t_sync;
         if (period_us < 50000 || period_us > 500000) period_us = 200000;
         uint32_t ticks_total = (uint32_t)((uint64_t)period_us * gw_sample_freq() / 1000000);
-        uint16_t cc = 0;
+        uint32_t cc = 0;
         while (ticks_total > 0 && cc < GW_FLUX_CAP_WORDS) {
             uint16_t v = ticks_total > 65500 ? 65500 : (uint16_t)ticks_total;
             cap_buf[cc++] = v;
@@ -439,7 +439,7 @@ static void cmd_read_flux(void) {
     gpio_set_irq_enabled_with_callback(PIN_INDEX, GPIO_IRQ_EDGE_FALL, true, &idx_irq_cb);
     idx_deadline = time_us_32() + 100000;
 
-    uint16_t cc = 0; uint32_t ip[8]; uint16_t ic = 0; ip[ic++] = 0;
+    uint32_t cc = 0; uint32_t ip[8]; uint16_t ic = 0; ip[ic++] = 0;
     uint32_t rdeadline = time_us_32() + 5000000;
 
     while (ic < revs && cc < GW_FLUX_CAP_WORDS && time_us_32() < rdeadline) {
@@ -458,7 +458,7 @@ static void cmd_read_flux(void) {
     }
     gpio_set_irq_enabled(PIN_INDEX, GPIO_IRQ_EDGE_FALL, false);
 
-    if (ic < revs && cc > 0) ip[ic++] = cc;
+    if (ic < revs && ic < 8 && cc > 0) ip[ic++] = cc;
 
     // TRANSMIT
     { uint8_t idx[6] = { 0xFF, FLUXOP_INDEX, 1, 1, 1, 1 }; gw_send_response(idx, 6); }
@@ -574,14 +574,16 @@ static void cmd_write_flux(void) {
     write_gate(false);
     gpio_put(PIN_WDATA, 1); // restore WDATA inactive HIGH
 
-    // Allow read amplifier to fully desaturate after write current.
-    // Some drives need significantly longer than the typical 10-20ms.
-    sleep_ms(200);
-
     // Fully release gw_writer SM to avoid PIO stall on subsequent reads
     pio_sm_unclaim(gw_w_pio, gw_w_sm);
     pio_remove_program(gw_w_pio, &gw_writer_program, gw_w_offset);
     gw_writer_ready = false;
+
+    // Minimal write-to-read recovery. The configurable post_write_us
+    // guard in cmd_seek() enforces the full requirement before a
+    // seek-into-read.
+    sleep_ms(20);
+
     last_write_end_us = time_us_32();
     tud_task();
     { uint8_t sync = 0; gw_send_response(&sync, 1); }

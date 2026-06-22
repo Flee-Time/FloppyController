@@ -11,7 +11,7 @@ void lba_to_chs(uint32_t lba, uint8_t *cylinder, uint8_t *head, uint8_t *sector)
     *cylinder = (lba / (18 * 2));
 }
 
-static uint16_t crc16_ccitt(const uint8_t* data, int len, uint16_t crc = 0xFFFF) {
+uint16_t crc16_ccitt(const uint8_t* data, int len, uint16_t crc) {
     for (int i = 0; i < len; i++) {
         crc ^= (uint16_t)data[i] << 8;
         for (int b = 0; b < 8; b++) {
@@ -40,20 +40,25 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
     shared_debug_pll = s_pll;
     shared_read_progress = 0;
 
+    int consecutive_bad = 0;
     uint32_t start_time = to_ms_since_boot(get_absolute_time());
 
-    while (to_ms_since_boot(get_absolute_time()) - start_time < 500) {
+    while (to_ms_since_boot(get_absolute_time()) - start_time < 1000) {
         if (pio_sm_is_rx_fifo_empty(flux_pio, flux_sm)) continue;
 
         uint32_t pio_val = pio_sm_get(flux_pio, flux_sm);
         uint32_t ticks = 0xFFFFFFFF - pio_val;
 
         if (ticks < 100 || ticks > 700) {
-            in_sync = false;
-            bit_count = 0;
-            shift_reg = 0;
+            if (++consecutive_bad >= 4) {
+                in_sync = false;
+                bit_count = 0;
+                shift_reg = 0;
+                shared_debug_state = 5;
+            }
             continue;
         }
+        consecutive_bad = 0;
 
         if (ticks > (s_pll - 40) && ticks < (s_pll + 40)) {
             s_pll = (s_pll * 15 + ticks) / 16;
@@ -79,18 +84,18 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
                 continue;
             }
 
-                if (in_sync && bit_count == 16) {
-                    uint8_t data_byte = 0;
-                    if (shift_reg & 0x4000) data_byte |= 0x80;
-                    if (shift_reg & 0x1000) data_byte |= 0x40;
-                    if (shift_reg & 0x0400) data_byte |= 0x20;
-                    if (shift_reg & 0x0100) data_byte |= 0x10;
-                    if (shift_reg & 0x0040) data_byte |= 0x08;
-                    if (shift_reg & 0x0010) data_byte |= 0x04;
-                    if (shift_reg & 0x0004) data_byte |= 0x02;
-                    if (shift_reg & 0x0001) data_byte |= 0x01;
+            if (in_sync && bit_count == 16) {
+                uint8_t data_byte = 0;
+                if (shift_reg & 0x4000) data_byte |= 0x80;
+                if (shift_reg & 0x1000) data_byte |= 0x40;
+                if (shift_reg & 0x0400) data_byte |= 0x20;
+                if (shift_reg & 0x0100) data_byte |= 0x10;
+                if (shift_reg & 0x0040) data_byte |= 0x08;
+                if (shift_reg & 0x0010) data_byte |= 0x04;
+                if (shift_reg & 0x0004) data_byte |= 0x02;
+                if (shift_reg & 0x0001) data_byte |= 0x01;
 
-                    bit_count = 0;
+                bit_count = 0;
 
                 if (state == HUNT_ID) {
                     if (data_byte == 0xFE) { state = READ_ID; byte_index = 0; }
