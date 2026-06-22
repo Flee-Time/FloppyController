@@ -88,10 +88,8 @@ NUKED: MSC write path (write_physical_sector / format_physical_track)
     debugging (tried: PIO shift direction, bit packing order, OSR drain
     time, full SM reinit, WGATE timing, data-only vs full-sector encoding).
     Write returns false; GW mode handles all write operations.
-  - TODO: ground-up rewrite of MSC write. Likely need to abandon the
-    flux_writer half-cell approach and use gw_writer-style raw flux
-    timing, or audit the MFM encoder word-packing and PIO output
-    mapping from scratch.
+  - TODO: ground-up rewrite of MSC write. Need to use DMA to feed the pio as 
+    timing is crucial and usb protocol interferes with this.
 
 DROPPED (was uint16_t cc bug, not hardware):
   - Index RPM detection via real PIO flux data showing ~2500 RPM.
