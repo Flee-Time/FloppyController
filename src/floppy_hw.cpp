@@ -70,7 +70,7 @@ void init_hardware() {
 
 void drive_select(bool active) {
     gpio_put(PIN_DRVSB, !active);
-    if (active && g_select_delay_us) sleep_us(g_select_delay_us);
+    if (active && g_select_delay_us) busy_wait_us_32(g_select_delay_us);
 }
 
 void drive_motor(bool active) {
@@ -80,9 +80,9 @@ void drive_motor(bool active) {
 void drive_step(bool direction_in) {
     gpio_put(PIN_DIR, direction_in ? 0 : 1);
     gpio_put(PIN_STEP, 0);
-    sleep_ms(g_step_delay_ms);
+    busy_wait_ms(g_step_delay_ms);
     gpio_put(PIN_STEP, 1);
-    sleep_ms(g_step_delay_ms);
+    busy_wait_ms(g_step_delay_ms);
 }
 
 void seek_track_0() {
@@ -90,7 +90,7 @@ void seek_track_0() {
     // tracks to guarantee we clear the track 0 sensor, then step inward
     // until the sensor triggers.
     for (int i = 0; i < 5; i++) drive_step(true);
-    sleep_ms(50);
+    busy_wait_ms(50);
 
     int timeout = 100;
     while (gpio_get(PIN_TRACK0) == 1 && timeout > 0) {
@@ -100,7 +100,7 @@ void seek_track_0() {
     current_track = 0;
 
     // Let the head and mechanics settle before attempting reads.
-    sleep_ms(20);
+    busy_wait_ms(20);
 }
 
 
@@ -118,7 +118,7 @@ void seek_physical_track(uint8_t target_track, uint8_t target_head) {
     uint32_t settle = g_settle_time_ms;
 
     if (target_track == current_track) {
-        if (head_changed) sleep_ms(settle);
+        if (head_changed) busy_wait_ms(settle);
         return;
     }
 
@@ -131,7 +131,7 @@ void seek_physical_track(uint8_t target_track, uint8_t target_head) {
     }
 
     current_track = target_track;
-    sleep_ms(settle);
+    busy_wait_ms(settle);
 }
 
 #define DISK_PROBE_INTERVAL_MS 2000
@@ -141,7 +141,7 @@ void poll_disk_change(uint32_t now) {
     static bool initial_probe_done = false;
 
     drive_select(true);
-    sleep_us(100);
+    busy_wait_us_32(100);
 
     bool latch_set = (gpio_get(PIN_DSKCHG) == 0);
 
@@ -181,7 +181,7 @@ void poll_disk_change(uint32_t now) {
     drive_motor(true);
     drive_step(true);
     drive_step(false);
-    sleep_ms(5);
+    busy_wait_ms(5);
 
     bool still_set = (gpio_get(PIN_DSKCHG) == 0);
     if (!still_set) {

@@ -5,6 +5,7 @@
 #include "mfm_writer.h"
 #include "mfm_encoder.h"
 #include "mode_config.h"
+#include "shared_state.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +23,7 @@ static bool claimed, writing, gate, reader_enabled, irq_enabled, write_enabled, 
 static bool fail_claim, fail_prepare, fail_id, fail_irq, fail_stall, fail_read, corrupt_read, drop_wp;
 static uint32_t id_latency;
 static const uint32_t* stream;
+volatile IoStage shared_io_stage;
 
 static void reset() {
     now = id_end = started = stopped = length = count_header = gates = 0;
@@ -32,7 +34,8 @@ static void reset() {
     id_latency = 0;
 }
 uint32_t time_us_32() { return ++now; }
-void sleep_us(uint64_t us) { CHECK(irq_enabled); now += uint32_t(us); }
+void sleep_us(uint64_t) { CHECK(false); } // The worker must not wait for an alarm IRQ on USB's core.
+void busy_wait_us_32(uint32_t us) { CHECK(irq_enabled); now += us; }
 void tight_loop_contents() {}
 bool gpio_get(unsigned pin) {
     if (pin == PIN_WP) return wp && !(drop_wp && writing && now - started >= 100);

@@ -12,3 +12,4 @@ uint32_t tud_cdc_write(const void*, uint32_t);
 uint32_t tud_cdc_write_available();
 uint32_t tud_cdc_write_flush();
 inline uint32_t tud_cdc_write_char(char c) { return tud_cdc_write(&c, 1); }
+void tud_task();

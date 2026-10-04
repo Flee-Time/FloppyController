@@ -6,6 +6,7 @@
 static char rx_ring[64];
 static volatile uint8_t rx_head = 0;
 static volatile uint8_t rx_tail = 0;
+static bool banner_pending;
 
 static void debug_write_str(const char* str) {
     if (!tud_cdc_connected()) return;
@@ -17,6 +18,7 @@ static void debug_write_str(const char* str) {
 }
 
 void debug_serial_init(void) {
+    banner_pending = true;
 }
 
 void debug_serial_write(const char* str) {
@@ -62,6 +64,11 @@ void debug_serial_write_dec32(uint32_t val) {
 
 void debug_serial_flush(void) {
     if (tud_cdc_connected()) {
+        static const char banner[] = "[I] firmware=msc-progress-v3\r\n";
+        if (banner_pending && tud_cdc_write_available() >= sizeof(banner) - 1) {
+            if (tud_cdc_write(banner, sizeof(banner) - 1) == sizeof(banner) - 1)
+                banner_pending = false;
+        }
         tud_cdc_write_flush();
     }
 }
@@ -78,7 +85,7 @@ extern "C" {
 
 void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
     (void) itf;
-    (void) dtr;
+    if (dtr) banner_pending = true;
     (void) rts;
 }
 

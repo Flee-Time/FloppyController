@@ -15,6 +15,8 @@
 #include "mode_config.h"
 #include "debug_serial.h"
 #include "gw/gw_proto.h"
+#include "usb_task.h"
+#include "usb_msc.h"
 
 volatile bool core1_request_pending = false;
 volatile bool core1_write_request = false;
@@ -38,6 +40,7 @@ volatile uint8_t shared_read_progress = 0;
 volatile uint8_t shared_last_cyl = 0;
 volatile uint8_t shared_last_head = 0;
 volatile uint8_t shared_last_sec = 0;
+volatile IoStage shared_io_stage = IO_IDLE;
 
 void core1_floppy_worker() {
     init_hardware();
@@ -60,10 +63,11 @@ void core1_floppy_worker() {
             __dmb();
             bool is_write = core1_write_request;
             if (!drive_active) {
+                shared_io_stage = IO_SPINUP;
                 drive_select(true);
                 drive_motor(true);
                 set_density(true);
-                sleep_ms(500);
+                busy_wait_ms(500);
                 drive_active = true;
             }
             last_activity = now;
@@ -71,6 +75,7 @@ void core1_floppy_worker() {
             uint8_t cyl, head, sec;
             lba_to_chs(shared_target_lba, &cyl, &head, &sec);
 
+            shared_io_stage = IO_SEEK;
             seek_physical_track(cyl, head);
 
             bool ok;
@@ -81,6 +86,7 @@ void core1_floppy_worker() {
                 memcpy((uint8_t*)shared_sector_buffer, cached_sector, 512);
                 ok = true;
             } else {
+                shared_io_stage = IO_READ;
                 ok = read_physical_sector(cyl, head, sec, (uint8_t*)shared_sector_buffer);
                 if (!ok) {
                     seek_physical_track(cyl, head);
@@ -104,6 +110,7 @@ void core1_floppy_worker() {
             }
 
             core1_result_success = ok;
+            shared_io_stage = IO_DONE;
             core1_write_request = false;
             __dmb();
             core1_result_ready = true;
@@ -117,7 +124,8 @@ void core1_floppy_worker() {
                 drive_select(true);
                 drive_motor(true);
                 set_density(true);
-                sleep_ms(500);
+                shared_io_stage = IO_SPINUP;
+                busy_wait_ms(500);
                 drive_active = true;
             }
             last_activity = now;
@@ -125,6 +133,7 @@ void core1_floppy_worker() {
             uint8_t fcyl = shared_format_cyl;
             uint8_t fhead = shared_format_head;
 
+            shared_io_stage = IO_SEEK;
             seek_physical_track(fcyl, fhead);
             bool fmt_ok = format_physical_track(fcyl, fhead);
             cache_valid = false;
@@ -151,7 +160,9 @@ void core1_floppy_worker() {
             }
         }
 
-        sleep_us(10);
+        // This core owns floppy timing. Do not depend on core 0's alarm
+        // pool/IRQ to wake it while core 0 is servicing sustained USB I/O.
+        busy_wait_us_32(10);
     }
 }
 
@@ -183,15 +194,16 @@ int main() {
     uint32_t fmt_track_timeout = 0;
 
     while (true) {
-        tud_task();
+        usb_task_run();
+        usb_msc_poll();
 
-    if (mode_has_debug()) {
-        debug_serial_flush();
-    }
+        if (mode_has_debug()) {
+            debug_serial_flush();
+        }
 
-    if (mode_has_gw()) {
-        gw_proto_poll();
-    }
+        if (mode_has_gw()) {
+            gw_proto_poll();
+        }
 
         // --- Format state machine (non-blocking) ---
         if (scsi_format_requested && fmt_state == FMT_IDLE) {

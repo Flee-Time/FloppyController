@@ -101,6 +101,16 @@ FIXED (2026-10-04): sustained MSC transfer hangs (hardware validation pending)
     the format track stream only while formatting; static BSS is 10,508 bytes.
   - Host regression keeps CDC full through 150 KiB + 1 MiB read/write transfers.
 
+CHANGED (2026-10-04): follow-up for repeatable LBA 81/82 stalls
+  - Bound each USB task run to 16 queue receives so self-queued MSC retries
+    cannot starve application polling. Preserve Pico queue/lock primitives.
+  - Route GW USB service loops through the same bounded entry point.
+  - Floppy worker delays use direct timer waits rather than core 0 alarms.
+  - Debug banner identifies msc-progress-v3; pending I/O logs its stage once
+    per second, and WRITE verified identifies successful worker completion.
+  - Host tests cover 1,000 continuously busy USB task runs and stage reports.
+  - The exact hardware freeze remains unconfirmed; retest and capture logs.
+
 DROPPED (was uint16_t cc bug, not hardware):
   - Index RPM detection via real PIO flux data showing ~2500 RPM.
     The cc overflow corrupted index positions and flux data.

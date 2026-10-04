@@ -38,6 +38,14 @@ extern volatile uint8_t shared_last_cyl;
 extern volatile uint8_t shared_last_head;
 extern volatile uint8_t shared_last_sec;
 
+// Core 1 records stages without making USB calls in timing-sensitive code.
+enum IoStage : uint8_t {
+    IO_IDLE, IO_SPINUP, IO_SEEK, IO_READ, IO_ENCODE, IO_DMA_PREPARE,
+    IO_PREWRITE, IO_LOCATE_ID, IO_EMIT, IO_DMA_STOP, IO_RECOVERY,
+    IO_VERIFY, IO_DONE, IO_FORMAT_INDEX
+};
+extern volatile IoStage shared_io_stage;
+
 // --- Hardware State (Updated by Core 1, read by Core 0) ---
 extern volatile bool sense_media_changed;
 extern volatile bool disk_present;
