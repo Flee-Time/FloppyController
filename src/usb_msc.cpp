@@ -5,6 +5,7 @@
 #include "mode_config.h"
 #include "debug_serial.h"
 #include "hw_config.h"
+#include "usb_msc.h"
 #include <string.h>
 
 static bool new_request_allowed(uint8_t lun) {
@@ -25,8 +26,36 @@ struct PendingIo {
     uint32_t lba = 0;
     uint32_t started_ms = 0;
     bool timeout_reported = false;
+    uint32_t last_report_ms = 0;
 };
 static PendingIo pending_io;
+
+static const char* io_stage_name() {
+    static const char* const names[] = {
+        "idle", "spinup", "seek", "read", "encode", "dma-prepare",
+        "prewrite", "locate-id", "emit", "dma-stop", "recovery",
+        "verify", "done", "format-index"
+    };
+    unsigned stage = shared_io_stage;
+    return stage < sizeof(names) / sizeof(names[0]) ? names[stage] : "unknown";
+}
+
+void usb_msc_poll() {
+    if (pending_io.kind == IoKind::NONE || !mode_has_debug()) return;
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (now - pending_io.last_report_ms < 1000) return;
+    pending_io.last_report_ms = now;
+    debug_serial_write(pending_io.kind == IoKind::WRITE ? "[W] WRITE waiting lba=" : "[W] READ waiting lba=");
+    debug_serial_write_dec32(pending_io.lba);
+    debug_serial_write(" stage=");
+    debug_serial_write(io_stage_name());
+    debug_serial_write(" ms=");
+    debug_serial_write_dec32(now - pending_io.started_ms);
+    __dmb();
+    if (!core1_request_pending && core1_result_ready)
+        debug_serial_write(" worker=finished usb=pending");
+    debug_serial_write("\r\n");
+}
 
 static void log_io_failure(IoKind kind, uint32_t lba) {
     if (!mode_has_debug()) return;
@@ -90,6 +119,11 @@ static int32_t sector_transfer(uint8_t lun, uint32_t lba, uint32_t offset,
             }
             if (kind == IoKind::READ)
                 memcpy(buffer, (const void*)shared_sector_buffer, 512);
+            else if (mode_has_debug()) {
+                debug_serial_write("[I] WRITE verified lba=");
+                debug_serial_write_dec32(lba);
+                debug_serial_write("\r\n");
+            }
             return 512;
         }
         // A USB reset may have abandoned the previous command. Discard its
@@ -111,7 +145,8 @@ static int32_t sector_transfer(uint8_t lun, uint32_t lba, uint32_t offset,
     shared_target_lba = lba;
     core1_write_request = kind == IoKind::WRITE;
     core1_result_ready = false;
-    pending_io = {kind, lba, to_ms_since_boot(get_absolute_time()), false};
+    uint32_t started = to_ms_since_boot(get_absolute_time());
+    pending_io = {kind, lba, started, false, started};
     __dmb();
     core1_request_pending = true;
     return 0;

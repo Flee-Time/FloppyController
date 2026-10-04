@@ -3,10 +3,12 @@
 #include "shared_state.h"
 #include "mode_config.h"
 #include "debug_serial.h"
+#include "usb_msc.h"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 extern "C" int32_t tud_msc_read10_cb(uint8_t, uint32_t, uint32_t, void*, uint32_t);
 extern "C" int32_t tud_msc_write10_cb(uint8_t, uint32_t, uint32_t, uint8_t*, uint32_t);
@@ -23,6 +25,7 @@ volatile uint32_t shared_target_lba;
 volatile uint8_t shared_sector_buffer[512], shared_format_cyl, shared_format_head;
 volatile uint8_t shared_debug_state, shared_read_progress, shared_last_cyl, shared_last_head, shared_last_sec;
 volatile uint32_t shared_debug_pll;
+volatile IoStage shared_io_stage;
 static uint64_t now;
 static bool connected = true, debug = true, writable = true;
 static uint32_t cdc_used, flushes, flush_budget = 10000;
@@ -78,6 +81,22 @@ int main() {
     debug_serial_flush();
     CHECK(cdc_used == 512 && flushes == 4);
     flush_budget = 100000;
+
+    // Progress polling runs independently of MSC retries. A worker hang and
+    // a completed worker whose USB completion is missing must be distinct.
+    cdc_used = 0;
+    CHECK(tud_msc_write10_cb(0, 81, 0, data.data(), 512) == 0);
+    shared_io_stage = IO_LOCATE_ID;
+    now += 1100000;
+    usb_msc_poll();
+    CHECK(std::string(cdc_output.data(), cdc_used).find("stage=locate-id") != std::string::npos);
+    complete(true);
+    now += 1100000;
+    usb_msc_poll();
+    CHECK(std::string(cdc_output.data(), cdc_used).find("worker=finished usb=pending") != std::string::npos);
+    CHECK(tud_msc_write10_cb(0, 81, 0, data.data(), 512) == 512);
+    CHECK(std::string(cdc_output.data(), cdc_used).find("WRITE verified lba=81") != std::string::npos);
+    cdc_used = 512;
 
     // 150 KiB (300 sectors), plus 1 MiB of repeated transfers. Every request
     // yields while the drive is busy, logs only once, and retains one buffer.
@@ -161,5 +180,9 @@ int main() {
     CHECK(sense == SCSI_SENSE_NOT_READY);
     format_in_progress = false;
     CHECK(!core1_request_pending);
+    cdc_used = 0;
+    debug_serial_init();
+    debug_serial_flush();
+    CHECK(std::string(cdc_output.data(), cdc_used).find("firmware=msc-progress-v3") != std::string::npos);
     std::puts("Full debug FIFO, 150 KiB + 1 MiB transfers, retries, resets, timeouts and protection passed");
 }

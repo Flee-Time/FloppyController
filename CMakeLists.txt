@@ -39,6 +39,7 @@ add_executable(FloppyController
     src/main.cpp
     src/floppy_hw.cpp
     src/usb_msc.cpp
+    src/usb_task.cpp
     src/usb_descriptors.cpp
     src/led_drv.cpp
     src/mfm_decoder.cpp

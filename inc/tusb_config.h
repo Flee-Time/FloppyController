@@ -6,7 +6,12 @@ extern "C" {
 
 // --- System ---
 #define CFG_TUSB_RHPORT0_MODE   OPT_MODE_DEVICE
-#define CFG_TUSB_OS             OPT_OS_PICO
+// The SDK supplies OPT_OS_PICO on the compiler command line. Our custom
+// adapter retains its primitives and bounds only queue dispatch.
+#ifdef CFG_TUSB_OS
+#undef CFG_TUSB_OS
+#endif
+#define CFG_TUSB_OS             OPT_OS_CUSTOM
 
 // --- Memory ---
 #define CFG_TUD_MAINTASK_SIZE   2048

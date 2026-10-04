@@ -90,7 +90,11 @@ because its counter decrements once per two system-clock cycles.
 
 USB callbacks submit one sector, then return zero while core 1 is busy.
 TinyUSB keeps the endpoint buffer and retries, servicing CDC, reset and
-control events between callbacks. Writes commit and verify before USB
+control events between callbacks. `usb_task_run()` dispatches at most 16
+events before returning to application polling, even if an MSC retry keeps
+the queue nonempty. It retains the SDK's Pico locks and IRQ-safe queue via
+the custom OS adapter. All main/GW USB service calls use this entry point.
+Writes commit and verify before USB
 acknowledges their bytes. SYNCHRONIZE CACHE and START/STOP UNIT reject requests
 while physical I/O remains outstanding. Missing/bad IDs, write protection,
 DMA underruns, timeouts and readback failures cause an error. Core 0 cannot
@@ -101,7 +105,13 @@ the serial host stops reading, so a full debug FIFO cannot stall disk I/O.
 MSC uses a fixed 512-byte shared sector buffer and a 1,064-byte encoded write
 stream regardless of file size. The 210 KB raw-flux buffer is allocated only
 in GreaseWeasel mode; a track buffer is allocated and freed for each FORMAT
-track. The Release build's static BSS is 10,508 bytes (previously 246,112).
+track. The Release build's static BSS is 10,516 bytes (previously 246,112).
+
+Core 1 uses direct timer busy waits for mechanical delays, pre/post-write
+delays and its idle loop, so floppy work does not rely on core 0's alarm IRQ
+to resume. Timing-sensitive code records a shared stage; only core 0 prints
+it. With debug enabled, pending requests report their stage once a second,
+and successful writes log `WRITE verified` before returning bytes to USB.
 
 FORMAT UNIT uses the same DMA/PIO writer for whole tracks, with C2/A1 address
 marks and 0xE5 fill. Track length comes from the measured index period, with a
@@ -123,7 +133,9 @@ vectors, format bounds, and sector splices through the real decoder, including
 neighboring sectors. Writer tests exercise protection, missed alignment,
 DMA/PIO failures, readback errors and cleanup. USB tests keep the debug FIFO
 full through simulated 150 KiB and 1 MiB transfers, checking callback retries,
-buffer ownership, resets, timeouts and protection. A cycle-level model
+buffer ownership, resets, timeouts and protection. The event-budget test
+keeps MSC retries queued over 1,000 task runs and checks that application
+polling, CDC and reset handling all progress. A cycle-level model
 executes the assembled PIO opcodes to check both branches, word boundaries,
 pulse width, underruns and final-bit completion. These checks do not replace
 physical-drive validation: copy a file of at least 150 KiB with debug enabled,

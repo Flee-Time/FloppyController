@@ -8,6 +8,7 @@
 #include "hw_config.h"
 #include "mode_config.h"
 #include "flux_writer.pio.h"
+#include "shared_state.h"
 #include <cstring>
 #include <cstdlib>
 #include <memory>
@@ -83,10 +84,12 @@ public:
         write_gate(false);
         pio_sm_set_enabled(pio1, write_sm, false);
         restore_interrupts(irq_state);
+        shared_io_stage = IO_DMA_STOP;
         dma_channel_abort(dma);
         pio_sm_clear_fifos(pio1, write_sm);
         pio_sm_set_pins_with_mask(pio1, write_sm, 1u << PIN_WDATA, 1u << PIN_WDATA);
-        sleep_us(floppy_get_post_write_us());
+        shared_io_stage = IO_RECOVERY;
+        busy_wait_us_32(floppy_get_post_write_us());
         pio_sm_clear_fifos(flux_pio, flux_sm);
         pio_sm_set_enabled(flux_pio, flux_sm, true);
         return ok;
@@ -94,6 +97,7 @@ public:
 
     ~FluxWrite() {
         if (dma >= 0) {
+            shared_io_stage = IO_DMA_STOP;
             write_gate(false);
             pio_sm_set_enabled(pio1, write_sm, false);
             dma_channel_abort(dma);
@@ -119,12 +123,16 @@ bool write_physical_sector(uint8_t target_cyl, uint8_t target_head,
         target_sec < 1 || target_sec > 18 || !writable()) return false;
 
     static uint32_t stream[MFM_SECTOR_WORDS];
+    shared_io_stage = IO_ENCODE;
     int words = mfm_encode_sector(data, stream);
     FluxWrite writer;
+    shared_io_stage = IO_DMA_PREPARE;
     if (!writer.prepare(stream, words)) return false;
-    sleep_us(floppy_get_pre_write_us()); // Before alignment, never inside the field.
+    shared_io_stage = IO_PREWRITE;
+    busy_wait_us_32(floppy_get_pre_write_us()); // Before alignment, never inside the field.
 
     uint32_t id_end;
+    shared_io_stage = IO_LOCATE_ID;
     if (!locate_physical_sector(target_cyl, target_head, target_sec, &id_end))
         return false; // Invalid/missing ID: WGATE has never been asserted.
 
@@ -132,15 +140,18 @@ bool write_physical_sector(uint8_t target_cyl, uint8_t target_head,
     // here; writing only data after an already-decoded DAM starts too late.
     // Decoding adds a few us of latency, absorbed by the 12-byte sync and GAP3.
     constexpr uint32_t gap2_us = 22 * 16;
+    shared_io_stage = IO_EMIT;
     if (!writer.run(false, id_end, gap2_us)) return false;
 
     static uint8_t verify[512];
+    shared_io_stage = IO_VERIFY;
     return read_physical_sector(target_cyl, target_head, target_sec, verify) &&
            memcmp(verify, data, sizeof(verify)) == 0;
 }
 
 bool format_physical_track(uint8_t cyl, uint8_t head) {
     if (cyl >= 80 || head >= 2 || !writable()) return false;
+    shared_io_stage = IO_FORMAT_INDEX;
     uint32_t first, second;
     if (!next_index(&first) || !next_index(&second)) return false;
     uint32_t period = second - first;

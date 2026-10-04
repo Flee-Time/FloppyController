@@ -12,6 +12,7 @@
 #include "floppy_hw.h"
 #include "led_drv.h"
 #include "mode_config.h"
+#include "usb_task.h"
 #include "gw_writer.pio.h"
 
 enum {
@@ -109,7 +110,7 @@ static void gw_flush_tx(void) {
 static void gw_send_response(const uint8_t* data, uint32_t len) {
     uint32_t w = 0;
     while (w < len) {
-        tud_task();
+        usb_task_run();
         uint32_t avail = tud_cdc_write_available();
         if (avail == 0) {
             tud_cdc_write_flush();
@@ -137,7 +138,7 @@ static bool gw_read_packet(void) {
     if (g_cmd_buf[1] < 2 || g_cmd_buf[1] > GW_CMD_BUF_MAX) {
         uint8_t bad = g_cmd_buf[0];
         for (int i = 2; i < g_cmd_buf[1]; i++) {
-            while (!tud_cdc_available()) { tud_task(); tight_loop_contents(); }
+            while (!tud_cdc_available()) { usb_task_run(); tight_loop_contents(); }
             tud_cdc_read_char();
         }
         gw_send_ack(bad, ACK_BAD_CMD);
@@ -147,7 +148,7 @@ static bool gw_read_packet(void) {
     g_cmd_len = g_cmd_buf[1];
 
     while (tud_cdc_available() < (int)(g_cmd_len - 2)) {
-        tud_task();
+        usb_task_run();
         tight_loop_contents();
     }
 
@@ -517,7 +518,7 @@ static void cmd_write_flux(void) {
     if (!gw_writer_ready) {
         uint8_t c;
         do {
-            while (!tud_cdc_available()) { tud_task(); }
+            while (!tud_cdc_available()) { usb_task_run(); }
             c = (uint8_t)tud_cdc_read_char();
         } while (c != 0);
         gw_send_ack(CMD_GET_FLUX_STATUS, ACK_OK);
@@ -537,7 +538,7 @@ static void cmd_write_flux(void) {
     uint8_t* raw = (uint8_t*)cap_buf;
     uint32_t raw_len = 0;
     while (true) {
-        while (!tud_cdc_available()) { tud_task(); }
+        while (!tud_cdc_available()) { usb_task_run(); }
         uint8_t b = (uint8_t)tud_cdc_read_char();
         if (b == 0) break;
         if (raw_len < GW_FLUX_CAP_BYTES)
@@ -599,7 +600,7 @@ static void cmd_write_flux(void) {
     sleep_ms(20);
 
     last_write_end_us = time_us_32();
-    tud_task();
+    usb_task_run();
     { uint8_t sync = 0; gw_send_response(&sync, 1); }
 }
 
@@ -751,7 +752,7 @@ static void cmd_erase_flux(void) {
     write_gate(true);
     uint32_t start = time_us_32();
     while (time_us_32() - start < ticks / 50) {
-        tud_task();
+        usb_task_run();
     }
     write_gate(false);
     sleep_ms(5); // write-to-read recovery time
@@ -802,7 +803,7 @@ static void cmd_sink_bytes(void) {
     uint32_t nr_total = nr;
     uint8_t buf[256];
     while (nr > 0) {
-        while (!tud_cdc_available()) { tud_task(); }
+        while (!tud_cdc_available()) { usb_task_run(); }
         uint32_t n = tud_cdc_available();
         if (n > sizeof(buf)) n = sizeof(buf);
         if (n > nr) n = nr;

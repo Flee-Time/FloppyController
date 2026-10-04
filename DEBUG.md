@@ -14,6 +14,10 @@ Tiers:
 
 Lines:
 
+  [I] firmware=msc-progress-v3
+      Printed when the debug terminal connects. Identifies the build with
+      bounded USB event dispatch and direct timer waits in the floppy worker.
+
   [I] TUR: no disk
       Drive empty. Host will retry.
 
@@ -23,6 +27,21 @@ Lines:
   [I] READ lba=N n=M
       Host wants M blocks starting at LBA N.
       LBA 0 = boot sector, 1-18 = FAT, 19-32 = root dir.
+
+  [I] WRITE lba=N n=1
+      Sector write submitted to core 1.
+
+  [I] WRITE verified lba=N
+      Core 1 finished the physical write and readback comparison. The MSC
+      callback is returning the completed sector's bytes to TinyUSB.
+
+  [W] WRITE waiting lba=N stage=STAGE ms=T
+  [W] READ waiting lba=N stage=STAGE ms=T
+      Outstanding request, reported at most once per second. T is elapsed
+      time since submission. Stages include seek, dma-prepare, locate-id,
+      emit, dma-stop, recovery, verify and done.
+      A suffix of "worker=finished usb=pending" means physical I/O completed
+      but its MSC callback has not consumed the result.
 
   [W] READ fail lba=N pr=P pll=PPP hdr=C/H/S
       Sector read failed after the decoder timeout and worker retries. Fields:
