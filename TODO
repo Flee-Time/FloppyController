@@ -93,6 +93,14 @@ FIXED (2026-10-04): MSC sector write path (hardware validation pending)
   - Failed/timed-out requests keep buffer ownership until core 1 finishes.
   - Native encoding/decoding, writer failure and assembled PIO timing tests.
 
+FIXED (2026-10-04): sustained MSC transfer hangs (hardware validation pending)
+  - Debug CDC writes no longer spin on a full TX FIFO inside USB callbacks.
+  - MSC callbacks yield while core 1 is busy; USB can service CDC and resets.
+  - A fixed sector buffer is retained through retries, timeouts and resets.
+  - Allocate the 210 KB flux buffer only in GreaseWeasel mode and allocate
+    the format track stream only while formatting; static BSS is 10,508 bytes.
+  - Host regression keeps CDC full through 150 KiB + 1 MiB read/write transfers.
+
 DROPPED (was uint16_t cc bug, not hardware):
   - Index RPM detection via real PIO flux data showing ~2500 RPM.
     The cc overflow corrupted index positions and flux data.
@@ -101,4 +109,5 @@ DROPPED (was uint16_t cc bug, not hardware):
 TODO:
   - Validate MSC sector writes and formats on a physical drive and capture
     WDATA/WGATE with a logic analyzer (2/3/4 us transition intervals).
+  - Retest a 150 KiB file copy with the debug terminal connected.
   - Multi-revolution flux reads (streaming with DMA)

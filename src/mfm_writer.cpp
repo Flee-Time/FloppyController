@@ -9,6 +9,8 @@
 #include "mode_config.h"
 #include "flux_writer.pio.h"
 #include <cstring>
+#include <cstdlib>
+#include <memory>
 
 namespace {
 bool writable() {
@@ -147,10 +149,13 @@ bool format_physical_track(uint8_t cyl, uint8_t head) {
     if (period < uint32_t(MFM_TRACK_MIN_WORDS) * 32 + 1000 ||
         period > uint32_t(MFM_TRACK_MAX_WORDS) * 32 + 1000) return false;
     int words = (period - 1000) / 32;
-    static uint32_t stream[MFM_TRACK_MAX_WORDS];
-    if (format_track_encode(cyl, head, stream, words) != words) return false;
+    // FORMAT alone needs a track-sized buffer. Release it after this track;
+    // ordinary sector copies use only their fixed 1,064-byte stream.
+    std::unique_ptr<uint32_t, decltype(&free)> stream(
+        static_cast<uint32_t*>(malloc(size_t(words) * sizeof(uint32_t))), &free);
+    if (!stream || format_track_encode(cyl, head, stream.get(), words) != words) return false;
     FluxWrite writer;
-    if (!writer.prepare(stream, words)) return false;
+    if (!writer.prepare(stream.get(), words)) return false;
     if (!next_index(&first) || !writer.run(true)) return false;
 
     static uint8_t verify[512];
