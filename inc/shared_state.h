@@ -16,9 +16,11 @@ extern volatile uint32_t shared_target_lba;
 extern volatile bool core1_result_ready;
 extern volatile bool core1_result_success;
 extern volatile bool core1_format_done;
+extern volatile bool core1_format_success;
 extern volatile uint8_t shared_sector_buffer[512];
 
 // --- Format state (Core 0 drives iteration) ---
+extern volatile bool format_in_progress;
 extern volatile uint8_t shared_format_cyl;
 extern volatile uint8_t shared_format_head;
 

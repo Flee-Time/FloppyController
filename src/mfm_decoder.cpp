@@ -21,7 +21,9 @@ uint16_t crc16_ccitt(const uint8_t* data, int len, uint16_t crc) {
     return crc;
 }
 
-bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t target_sec, uint8_t* buffer) {
+static bool read_or_locate_sector(uint8_t target_cyl, uint8_t target_head,
+                                  uint8_t target_sec, uint8_t* buffer,
+                                  uint32_t* id_end_us) {
     pio_sm_clear_fifos(flux_pio, flux_sm);
 
     uint32_t shift_reg = 0;
@@ -52,6 +54,7 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
         if (ticks < 100 || ticks > 700) {
             if (++consecutive_bad >= 4) {
                 in_sync = false;
+                state = HUNT_ID;
                 bit_count = 0;
                 shift_reg = 0;
                 shared_debug_state = 5;
@@ -99,9 +102,13 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
 
                 if (state == HUNT_ID) {
                     if (data_byte == 0xFE) { state = READ_ID; byte_index = 0; }
+                    else in_sync = false; // A mark must immediately follow sync.
                 } else if (state == READ_ID) {
                     sector_header[byte_index++] = data_byte;
                     if (byte_index == 6) {
+                        // Timestamp before CRC processing. Locate callers use
+                        // this boundary to schedule the write within GAP2.
+                        uint32_t boundary_us = time_us_32();
                         static const uint8_t id_presync[4] = {0xA1, 0xA1, 0xA1, 0xFE};
                         uint16_t crc = crc16_ccitt(id_presync, 4);
                         crc = crc16_ccitt(sector_header, 4, crc);
@@ -117,7 +124,12 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
                         if (crc == want_crc &&
                             sector_header[0] == target_cyl &&
                             sector_header[1] == target_head &&
-                            sector_header[2] == target_sec) {
+                            sector_header[2] == target_sec &&
+                            sector_header[3] == 2) {
+                            if (id_end_us) {
+                                *id_end_us = boundary_us;
+                                return true;
+                            }
                             state = HUNT_DATA;
                             in_sync = false; shift_reg = 0; bit_count = 0;
                             shared_read_progress = 3;
@@ -129,7 +141,11 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
                     if (data_byte == 0xFB) {
                         state = READ_DATA; byte_index = 0;
                         if (shared_read_progress < 4) shared_read_progress = 4;
-                    }
+                    } else if (data_byte == 0xFE) {
+                        // A missing/corrupt DAM must not bind the next sector's
+                        // valid payload to the previously matched target ID.
+                        state = READ_ID; byte_index = 0;
+                    } else in_sync = false;
                 } else if (state == READ_DATA) {
                     if (byte_index < 512) {
                         buffer[byte_index] = data_byte;
@@ -161,4 +177,15 @@ bool read_physical_sector(uint8_t target_cyl, uint8_t target_head, uint8_t targe
     shared_debug_state = 4;
     shared_debug_pll = s_pll;
     return false;
+}
+
+bool read_physical_sector(uint8_t cyl, uint8_t head, uint8_t sec, uint8_t* buffer) {
+    if (!buffer || cyl >= 80 || head >= 2 || sec < 1 || sec > 18) return false;
+    return read_or_locate_sector(cyl, head, sec, buffer, nullptr);
+}
+
+bool locate_physical_sector(uint8_t cyl, uint8_t head, uint8_t sec,
+                            uint32_t* id_end_us) {
+    if (!id_end_us || cyl >= 80 || head >= 2 || sec < 1 || sec > 18) return false;
+    return read_or_locate_sector(cyl, head, sec, nullptr, id_end_us);
 }

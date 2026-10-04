@@ -22,7 +22,7 @@ Dual-core RP2040 firmware that turns a Raspberry Pi Pico into a USB floppy disk 
 | DIP 1   | 27   | IN (debug) |
 | DIP 2   | 26   | IN (write enable) |
 | DIP 3   | 15   | IN (GW mode) |
-| DIP 4   | 14   | IN (track write) |
+| DIP 4   | 14   | IN (reserved) |
 | LED     | 16   | OUT (WS2812) |
 
 ## DIP Switch Configuration
@@ -32,7 +32,7 @@ Dual-core RP2040 firmware that turns a Raspberry Pi Pico into a USB floppy disk 
 | 1 | Debug serial | Disabled | CDC ACM debug output |
 | 2 | Write enable | Read-only | Writes allowed |
 | 3 | Operation mode | MSC (mass storage) | GreaseWeasel |
-| 4 | Track write | — | Read-modify-write entire track |
+| 4 | Reserved | — | — |
 
 ## Build
 
@@ -62,24 +62,61 @@ Flash `FloppyController.uf2` to the Pico in BOOTSEL mode.
 
 ### Write Path
 
-**⚠ Currently broken — writing via MSC corrupts the diskette.**
-
-The `flux_writer` PIO output is not producing valid MFM-encoded flux. Track writes result in noise/unreadable data on disk. Root cause under investigation.
+MSC writes update individual sectors on standard IBM 1.44 MB media. The
+existing ID field and other sectors are preserved. A sector's write stream
+contains 532 encoded bytes (8.512 ms), including the sync, data address mark,
+payload, CRC, and two gap bytes. Seeking, rotational waits and verification
+add to the host-visible write latency.
 
 ```
 Host USB SCSI WRITE(10)
   → tud_msc_write10_cb()           [Core 0]
     → shared_sector_buffer          [cross-core]
     → core1_floppy_worker()         [Core 1]
-      → read all 18 sectors of target track into tw_buf[18][512]
-      → update target sector in buffer
-      → format_track_with_data_encode() → MFM half-cell bitstream
-      → write_track_raw()
-        → DMA → flux_writer PIO → WDATA pin → drive write head
-      → write_track_raw() returns → WGATE off
+      → encode target sector (MSB-first words, A1 sync = 0x4489)
+      → preload DMA → flux_writer PIO
+      → locate target C/H/S with valid ID CRC and size code N=2
+      → wait through the standard 22-byte GAP2 (352 us)
+      → assert WGATE and emit sync/DAM/data/CRC/gap via DMA + PIO
+      → wait for PIO completion IRQ, then disable WGATE
+      → read back target sector and compare all 512 bytes
 ```
 
-Writes are committed immediately (no deferred caching). SYNC CACHE and START/STOP UNIT SCSI commands trigger a dirty-track flush.
+At 500 kbit/s, each data cell lasts 2 us and each MFM half-cell lasts 1 us.
+Both PIO branches take 20 cycles at 20 MHz; a transition pulses WDATA LOW
+for 200 ns. Normal flux transition intervals are 2, 3 or 4 us. The reader's
+nominal 200-tick PLL value represents the shortest **two-half-cell** interval,
+because its counter decrements once per two system-clock cycles.
+
+Writes commit and verify before returning. SYNCHRONIZE CACHE and START/STOP
+UNIT need no deferred flush. Missing/bad IDs, write protection, DMA underruns,
+timeouts and readback failures cause an error. Core 0 cannot reuse an
+outstanding request's buffer after a timeout.
+
+FORMAT UNIT uses the same DMA/PIO writer for whole tracks, with C2/A1 address
+marks and 0xE5 fill. Track length comes from the measured index period, with a
+1 ms guard before the next index; unsupported spindle speeds are rejected.
+Formatting stops on a write or verification failure.
+
+### Write regression tests
+
+Host tests require a C++17 compiler, Python 3, and `pioasm` from the Pico SDK:
+
+```
+cmake -S tests -B build/host-tests -DPIOASM_EXECUTABLE=/path/to/pioasm
+cmake --build build/host-tests
+ctest --test-dir build/host-tests --output-on-failure
+```
+
+The tests check packing order, MFM clock rules, A1/C2 marks, independent CRC
+vectors, format bounds, and sector splices through the real decoder, including
+neighboring sectors. Writer tests exercise protection, missed alignment,
+DMA/PIO failures, readback errors and cleanup. A cycle-level model executes the
+assembled PIO opcodes to
+check both branches, word boundaries, pulse width, underruns and final-bit
+completion. These checks do not replace physical-drive validation: capture
+WDATA/WGATE and confirm 2/3/4 us transition intervals, then write/read/compare
+sectors at both ends of the disk and check the surrounding sectors.
 
 ### Read Path
 

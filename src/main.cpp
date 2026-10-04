@@ -23,6 +23,8 @@ volatile uint32_t shared_target_lba = 0;
 volatile bool core1_result_ready = false;
 volatile bool core1_result_success = false;
 volatile bool core1_format_done = false;
+volatile bool core1_format_success = false;
+volatile bool format_in_progress = false;
 volatile uint8_t shared_sector_buffer[512];
 volatile uint8_t shared_format_cyl = 0;
 volatile uint8_t shared_format_head = 0;
@@ -55,6 +57,8 @@ void core1_floppy_worker() {
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
         if (core1_request_pending) {
+            __dmb();
+            bool is_write = core1_write_request;
             if (!drive_active) {
                 drive_select(true);
                 drive_motor(true);
@@ -70,7 +74,7 @@ void core1_floppy_worker() {
             seek_physical_track(cyl, head);
 
             bool ok;
-            if (core1_write_request) {
+            if (is_write) {
                 ok = write_physical_sector(cyl, head, sec, (const uint8_t*)shared_sector_buffer);
                 cache_valid = false;
             } else if (cache_valid && cache_cyl == cyl && cache_head == head && cache_sec == sec) {
@@ -93,19 +97,22 @@ void core1_floppy_worker() {
                 }
             }
 
-            if (ok && !core1_write_request) {
+            if (ok && !is_write) {
                 cache_cyl = cyl; cache_head = head; cache_sec = sec;
                 memcpy(cached_sector, (const uint8_t*)shared_sector_buffer, 512);
                 cache_valid = true;
             }
 
             core1_result_success = ok;
+            core1_write_request = false;
+            __dmb();
+            core1_result_ready = true;
             __dmb();
             core1_request_pending = false;
-            core1_result_ready = true;
         }
 
         if (core1_format_request && !core1_request_pending) {
+            __dmb();
             if (!drive_active) {
                 drive_select(true);
                 drive_motor(true);
@@ -120,11 +127,13 @@ void core1_floppy_worker() {
 
             seek_physical_track(fcyl, fhead);
             bool fmt_ok = format_physical_track(fcyl, fhead);
+            cache_valid = false;
+            core1_format_success = fmt_ok;
 
             __dmb();
-            core1_format_request = false;
             core1_format_done = true;
-            (void)fmt_ok;
+            __dmb();
+            core1_format_request = false;
         }
 
         if (drive_active && !core1_request_pending && (now - last_activity > 2000)) {
@@ -195,6 +204,7 @@ int main() {
             } else {
                 debug_serial_write("[I] FORMAT start\r\n");
                 fmt_state = FMT_STARTING;
+                format_in_progress = true;
                 fmt_cyl = 0;
                 fmt_head = 0;
             }
@@ -212,7 +222,15 @@ int main() {
         }
 
         if (fmt_state == FMT_WAITING) {
-            if (core1_format_done) {
+            if (core1_format_done && !core1_format_request) {
+                __dmb();
+                if (!core1_format_success) {
+                    debug_serial_write("[E] FORMAT write/verify failed\r\n");
+                    sense_media_changed = true;
+                    format_in_progress = false;
+                    fmt_state = FMT_IDLE;
+                    continue;
+                }
                 if (mode_has_debug()) {
                     debug_serial_write("[I] FORMAT cyl=");
                     debug_serial_write_dec32(fmt_cyl);
@@ -228,16 +246,17 @@ int main() {
                     disk_present = true;
                     sense_media_changed = true;
                     fmt_state = FMT_IDLE;
+                    format_in_progress = false;
                 } else {
                     fmt_state = FMT_STARTING;
                 }
             } else if (to_ms_since_boot(get_absolute_time()) - fmt_track_timeout > 10000) {
                 if (mode_has_debug())
                     debug_serial_write("[E] FORMAT timeout\r\n");
-                core1_format_request = false;
-                disk_present = true;
+                // Leave the outstanding request owned by core 1 until it exits.
                 sense_media_changed = true;
                 fmt_state = FMT_IDLE;
+                format_in_progress = false;
             }
         }
 
