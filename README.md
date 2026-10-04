@@ -88,10 +88,20 @@ for 200 ns. Normal flux transition intervals are 2, 3 or 4 us. The reader's
 nominal 200-tick PLL value represents the shortest **two-half-cell** interval,
 because its counter decrements once per two system-clock cycles.
 
-Writes commit and verify before returning. SYNCHRONIZE CACHE and START/STOP
-UNIT need no deferred flush. Missing/bad IDs, write protection, DMA underruns,
-timeouts and readback failures cause an error. Core 0 cannot reuse an
-outstanding request's buffer after a timeout.
+USB callbacks submit one sector, then return zero while core 1 is busy.
+TinyUSB keeps the endpoint buffer and retries, servicing CDC, reset and
+control events between callbacks. Writes commit and verify before USB
+acknowledges their bytes. SYNCHRONIZE CACHE and START/STOP UNIT reject requests
+while physical I/O remains outstanding. Missing/bad IDs, write protection,
+DMA underruns, timeouts and readback failures cause an error. Core 0 cannot
+reuse an outstanding request's buffer after a timeout or USB reset.
+
+Debug CDC output never waits for buffer space. Excess text is discarded if
+the serial host stops reading, so a full debug FIFO cannot stall disk I/O.
+MSC uses a fixed 512-byte shared sector buffer and a 1,064-byte encoded write
+stream regardless of file size. The 210 KB raw-flux buffer is allocated only
+in GreaseWeasel mode; a track buffer is allocated and freed for each FORMAT
+track. The Release build's static BSS is 10,508 bytes (previously 246,112).
 
 FORMAT UNIT uses the same DMA/PIO writer for whole tracks, with C2/A1 address
 marks and 0xE5 fill. Track length comes from the measured index period, with a
@@ -111,11 +121,13 @@ ctest --test-dir build/host-tests --output-on-failure
 The tests check packing order, MFM clock rules, A1/C2 marks, independent CRC
 vectors, format bounds, and sector splices through the real decoder, including
 neighboring sectors. Writer tests exercise protection, missed alignment,
-DMA/PIO failures, readback errors and cleanup. A cycle-level model executes the
-assembled PIO opcodes to
-check both branches, word boundaries, pulse width, underruns and final-bit
-completion. These checks do not replace physical-drive validation: capture
-WDATA/WGATE and confirm 2/3/4 us transition intervals, then write/read/compare
+DMA/PIO failures, readback errors and cleanup. USB tests keep the debug FIFO
+full through simulated 150 KiB and 1 MiB transfers, checking callback retries,
+buffer ownership, resets, timeouts and protection. A cycle-level model
+executes the assembled PIO opcodes to check both branches, word boundaries,
+pulse width, underruns and final-bit completion. These checks do not replace
+physical-drive validation: copy a file of at least 150 KiB with debug enabled,
+capture WDATA/WGATE and confirm 2/3/4 us transition intervals, then write/read/compare
 sectors at both ends of the disk and check the surrounding sectors.
 
 ### Read Path

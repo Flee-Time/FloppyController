@@ -4,6 +4,7 @@
 #include "hardware/clocks.h"
 #include "hardware/pio.h"
 #include <cstring>
+#include <cstdlib>
 
 #include "gw/gw_proto.h"
 #include "gw/greasepack.h"
@@ -58,6 +59,7 @@ enum {
 
 #define GW_CMD_BUF_MAX   20
 #define GW_FLUX_CAP_WORDS 105000
+constexpr size_t GW_FLUX_CAP_BYTES = GW_FLUX_CAP_WORDS * sizeof(uint16_t);
 
 static uint8_t  g_cmd_buf[GW_CMD_BUF_MAX];
 static uint8_t  g_cmd_len;
@@ -91,7 +93,9 @@ static void gw_init_writer(void) {
 }
 
 // --- DMA-based capture buffer ---
-static uint16_t cap_buf[GW_FLUX_CAP_WORDS];
+// Allocate once only when the boot DIP selects GreaseWeasel. MSC mode must
+// not reserve 210 KB for an inactive protocol. Neither mode buffers files.
+static uint16_t* cap_buf;
 static uint32_t last_write_end_us;
 
 static uint32_t gw_sample_freq(void) {
@@ -328,6 +332,11 @@ static void idx_irq_cb(uint gpio, uint32_t events) {
 
 
 static void cmd_read_flux(void) {
+    if (!cap_buf) {
+        gw_flux_status = ACK_OUT_OF_SRAM;
+        gw_send_ack(CMD_READ_FLUX, ACK_OUT_OF_SRAM);
+        return;
+    }
     uint32_t ticks_limit;
     uint16_t revs;
     memcpy(&ticks_limit, g_cmd_buf + 2, 4);
@@ -479,6 +488,11 @@ static void cmd_read_flux(void) {
 }
 
 static void cmd_write_flux(void) {
+    if (!cap_buf) {
+        gw_flux_status = ACK_OUT_OF_SRAM;
+        gw_send_ack(CMD_WRITE_FLUX, ACK_OUT_OF_SRAM);
+        return;
+    }
     bool cue_at_index = g_cmd_buf[2] != 0;
     bool terminate_at_index = (g_cmd_len >= 4) ? (g_cmd_buf[3] != 0) : false;
 
@@ -526,7 +540,7 @@ static void cmd_write_flux(void) {
         while (!tud_cdc_available()) { tud_task(); }
         uint8_t b = (uint8_t)tud_cdc_read_char();
         if (b == 0) break;
-        if (raw_len < sizeof(cap_buf))
+        if (raw_len < GW_FLUX_CAP_BYTES)
             raw[raw_len++] = b;
     }
 
@@ -870,6 +884,8 @@ static void gw_dispatch(void) {
 }
 
 void gw_proto_init(void) {
+    if (!cap_buf && mode_has_gw())
+        cap_buf = static_cast<uint16_t*>(malloc(GW_FLUX_CAP_BYTES));
     led_set_rgb(0, 0, 0);
     gw_drive_selected = false;
     gw_motor_on = false;

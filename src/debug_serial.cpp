@@ -7,24 +7,13 @@ static char rx_ring[64];
 static volatile uint8_t rx_head = 0;
 static volatile uint8_t rx_tail = 0;
 
-static void debug_putc(char c) {
-    if (!tud_cdc_connected()) return;
-    tud_cdc_write_char(c);
-}
-
 static void debug_write_str(const char* str) {
     if (!tud_cdc_connected()) return;
-    uint32_t len = strlen(str);
-    uint32_t written = 0;
-    while (written < len) {
-        uint32_t avail = tud_cdc_write_available();
-        if (avail == 0) { tud_cdc_write_flush(); continue; }
-        uint32_t chunk = len - written;
-        if (chunk > avail) chunk = avail;
-        tud_cdc_write(str + written, chunk);
-        written += chunk;
-        tud_cdc_write_flush();
-    }
+    // Called from TinyUSB callbacks: waiting here for a CDC completion
+    // prevents that completion from being serviced by the USB task.
+    // Debug output is best-effort; discard excess text when the host stalls.
+    tud_cdc_write(str, static_cast<uint32_t>(strlen(str)));
+    tud_cdc_write_flush();
 }
 
 void debug_serial_init(void) {

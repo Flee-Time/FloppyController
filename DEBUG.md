@@ -3,6 +3,10 @@ Debug Serial Output Reference
 
 Enable: DIP switch 1 ON (GPIO27 to GND). Connect terminal to CDC COM port.
 
+Output is best-effort. If the terminal stops reading or the USB debug FIFO
+fills, excess text is dropped so disk transfers can continue. Partial or
+missing log lines do not indicate a failed disk transfer.
+
 Tiers:
   [I] = Info    — normal operations
   [W] = Warning — recoverable issue, read retried
@@ -21,7 +25,7 @@ Lines:
       LBA 0 = boot sector, 1-18 = FAT, 19-32 = root dir.
 
   [W] READ fail lba=N pr=P pll=PPP hdr=C/H/S
-      Sector read failed after 500ms timeout + retry. Fields:
+      Sector read failed after the decoder timeout and worker retries. Fields:
         pr    Decoder progress (how far it got):
               0 = no progress at all
               1 = sync mark (0x4489) found
@@ -34,10 +38,9 @@ Lines:
         hdr   Last decoded sector header: cylinder/head/sector.
               "0/0/0" means no valid header was decoded.
 
-  [E] READ timeout
+  [E] sector I/O timeout
       Core 1 did not respond within 5 seconds.
+      USB reports an error while retaining the sector buffer until core 1 exits.
 
   [W] SCSI unk op=HH
       Unrecognised SCSI command (hex). Some hosts probe for features.
-
-  LED: Red pulse (100ms) on each failed sector read.
