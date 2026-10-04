@@ -9,13 +9,33 @@
 #include "floppy_hw.h"
 #include <string.h>
 
-static bool format_in_progress = false;
+// The configured endpoint delivers complete sectors. Reject malformed or
+// out-of-range requests instead of acknowledging bytes we did not transfer.
+static bool valid_transfer(uint8_t lun, uint32_t lba, uint32_t offset, uint32_t size) {
+    if (offset || !size || (size % 512)) {
+        tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x24, 0x00);
+        return false;
+    }
+    if (lba >= 2880 || size / 512 > 2880 - lba) {
+        tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00);
+        return false;
+    }
+    if (core1_request_pending || core1_format_request || format_in_progress || scsi_format_requested) {
+        tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x04, 0x07);
+        return false;
+    }
+    if (!disk_present) {
+        tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3A, 0x00);
+        return false;
+    }
+    return true;
+}
 
 extern "C" {
     bool tud_msc_test_unit_ready_cb(uint8_t lun) {
         (void) lun;
 
-        if (core1_format_request) {
+        if (core1_format_request || format_in_progress || scsi_format_requested) {
             if (mode_has_debug())
                 debug_serial_write("[I] TUR: format in progress\r\n");
             tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x04, 0x04);
@@ -52,7 +72,7 @@ extern "C" {
     }
 
     int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
-        (void) lun; (void) offset;
+        if (!valid_transfer(lun, lba, offset, bufsize)) return -1;
         uint32_t block_count = bufsize / 512;
         uint8_t* ptr = (uint8_t*) buffer;
 
@@ -67,17 +87,19 @@ extern "C" {
         for (uint32_t i = 0; i < block_count; i++) {
             shared_target_lba = lba + i;
             core1_result_ready = false;
+            core1_write_request = false;
 
             __dmb();
             core1_request_pending = true;
 
             uint32_t wait_start = to_ms_since_boot(get_absolute_time());
-            while (!core1_result_ready) {
+            while (!core1_result_ready || core1_request_pending) {
                 if (to_ms_since_boot(get_absolute_time()) - wait_start > 5000) {
                     if (mode_has_debug())
                         debug_serial_write("[E] READ timeout\r\n");
                     tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);
-                    core1_request_pending = false;
+                    // Core 1 still owns the buffer; refuse further transfers
+                    // while its request remains pending.
                     return -1;
                 }
                 tight_loop_contents();
@@ -116,11 +138,13 @@ extern "C" {
     }
 
     int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
-        (void) lun; (void) offset;
+        if (!valid_transfer(lun, lba, offset, bufsize)) return -1;
 
         // Belt and braces: refuse if write-protected or DIP-locked.
-        if (gpio_get(PIN_WP) == 0 || !mode_has_write())
+        if (gpio_get(PIN_WP) == 0 || !mode_has_write()) {
+            tud_msc_set_sense(lun, SCSI_SENSE_DATA_PROTECT, 0x27, 0x00);
             return -1;
+        }
 
         uint32_t block_count = bufsize / 512;
 
@@ -142,12 +166,11 @@ extern "C" {
             core1_request_pending = true;
 
             uint32_t wait_start = to_ms_since_boot(get_absolute_time());
-            while (!core1_result_ready) {
+            while (!core1_result_ready || core1_request_pending) {
                 if (to_ms_since_boot(get_absolute_time()) - wait_start > 5000) {
                     if (mode_has_debug())
                         debug_serial_write("[E] WRITE timeout\r\n");
-                    core1_request_pending = false;
-                    core1_write_request = false;
+                    tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
                     return -1;
                 }
                 tight_loop_contents();
@@ -159,6 +182,7 @@ extern "C" {
             if (!core1_result_success) {
                 if (mode_has_debug())
                     debug_serial_write("[W] WRITE fail\r\n");
+                tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0C, 0x00);
                 return -1;
             }
         }
@@ -191,6 +215,14 @@ extern "C" {
                 resplen = 0; break;
             case 0x04:
             {
+                if (gpio_get(PIN_WP) == 0 || !mode_has_write()) {
+                    tud_msc_set_sense(lun, SCSI_SENSE_DATA_PROTECT, 0x27, 0x00);
+                    return -1;
+                }
+                if (core1_request_pending || core1_format_request || format_in_progress || scsi_format_requested) {
+                    tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x04, 0x04);
+                    return -1;
+                }
                 if (mode_has_debug())
                     debug_serial_write("[I] SCSI FORMAT UNIT\r\n");
                 scsi_format_requested = true;
@@ -198,6 +230,7 @@ extern "C" {
                 break;
             }
             case 0x1B:
+            case 0x35: // SYNCHRONIZE CACHE: sector writes commit before returning.
                 resplen = 0; break;
             case 0x00:
                 resplen = 0; break;

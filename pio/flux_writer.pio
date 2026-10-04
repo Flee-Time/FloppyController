@@ -1,26 +1,26 @@
 .program flux_writer
 
-; Generates WDATA flux transition pulses from a half-cell bitstream.
-; Each bit: 0 = no transition (steady HIGH), 1 = transition (LOW pulse).
-;
-; Clock: system / 10 = 20 MHz (50ns per cycle)
-; Half-cell: 1000ns = 20 PIO cycles at 20 MHz
-; Pulse LOW: 200ns = 4 cycles,  Gap HIGH: 800ns = 16 cycles
+; FIFO: half-cell count minus one, then MSB-first half-cell words.
+; At 20 MHz both paths take 20 cycles = 1 us per half-cell.
+; Transitions pulse WDATA LOW for 4 cycles = 200 ns.
+; Completion IRQ is relative to the SM number, after the final half-cell.
+    pull block
+    out y, 32
 
 .wrap_target
-    out x, 1              ; 1   shift next bit from OSR into X[0]
-    jmp !x, no_pulse      ; 2   if bit == 0, skip pulse
-
-    ; Transition: produce a ~200ns LOW pulse then return HIGH
-    set pins, 0           ; 3   WDATA LOW
-    nop [2]               ; 4-5 wait (total LOW = 4 cycles = 200ns)
-    set pins, 1           ; 6   WDATA HIGH
-    nop [12]              ; 7-19 wait (total HIGH = 14 cycles = 700ns)
-                           ;     + out+jmp = 2 → 20 cycles total ✓
-
+bitloop:
+    out x, 1              ; 1 cycle
+    jmp !x, no_pulse      ; 1 cycle
+    set pins, 0 [3]       ; 4 cycles LOW
+    set pins, 1 [11]      ; 12 cycles HIGH
+    jmp bit_done          ; 1 cycle: do not fall through into no_pulse
 no_pulse:
-    nop [17]              ; 3-20 wait (18 cycles + out+jmp = 20 ✓)
-
+    nop [16]              ; 17 cycles HIGH
+bit_done:
+    jmp y--, bitloop      ; 1 cycle (both paths total 20)
+    irq 0 rel             ; complete stream emitted, WDATA HIGH
+halt:
+    jmp halt
 .wrap
 
 % c-sdk {
@@ -30,14 +30,13 @@ static inline void flux_writer_program_init(PIO pio, uint sm, uint offset,
                                              uint pin_wdata) {
     pio_sm_config c = flux_writer_program_get_default_config(offset);
 
-    sm_config_set_out_pins(&c, pin_wdata, 1);
     sm_config_set_set_pins(&c, pin_wdata, 1);
+    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&c, (float)clock_get_hz(clk_sys) / 20000000.0f);
     pio_gpio_init(pio, pin_wdata);
-    pio_sm_set_consecutive_pindirs(pio, sm, pin_wdata, 1, true);
-
-    sm_config_set_out_shift(&c, true, true, 32);
-    sm_config_set_clkdiv(&c, 10.0f);
-
     pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_wdata, 1, true);
+    pio_sm_set_pins_with_mask(pio, sm, 1u << pin_wdata, 1u << pin_wdata);
 }
 %}

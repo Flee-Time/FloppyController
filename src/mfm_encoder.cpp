@@ -11,20 +11,15 @@ static uint16_t crc16(const uint8_t* data, int len, uint16_t crc) {
     return crc;
 }
 
-// Buffer for accumulating half-cell bits before packing into 32-bit words.
-#define MAX_BITS 10000
-static uint8_t bit_buf[MAX_BITS];
+// Pack directly into the output. The PIO shifts left (MSB first).
+static uint32_t* bit_output;
 static int bit_count = 0;
 
 // Emit a single half-cell bit (0 = no transition, 1 = flux reversal).
 static void emit(uint8_t b) {
-    if (bit_count < MAX_BITS)
-        bit_buf[bit_count++] = b;
-}
-
-// Emit "count" zero bits (no transitions).
-static void emit_zeros(int count) {
-    while (count-- > 0) emit(0);
+    if ((bit_count & 31) == 0) bit_output[bit_count / 32] = 0;
+    if (b) bit_output[bit_count / 32] |= 1u << (31 - (bit_count & 31));
+    ++bit_count;
 }
 
 // Emit the raw MFM bit pattern for a single byte with normal clock encoding.
@@ -48,20 +43,22 @@ static int emit_byte_normal(uint8_t byte, int prev_data) {
 }
 
 // Emit the raw MFM bit pattern for an A1 sync byte with missing clock.
-// The missing clock is on the second bit cell (first 0 after a 1).
+// 0x4489: the missing clock is at data bit 2, not bit 6.
 static void emit_byte_a1(void) {
-    // A1 = 0xA1 = 0b10100001. Missing clock on bit 6 (second data bit).
+    // A1 = 0xA1 = 0b10100001.
     emit(0); emit(1);  // bit7=1: no clock, data
-    emit(0); emit(0);  // bit6=0: MISSING clock, no data
+    emit(0); emit(0);  // bit6=0: no clock (prev=1), no data
     emit(0); emit(1);  // bit5=1: no clock, data
     emit(0); emit(0);  // bit4=0: no clock (prev=1), no data
     emit(1); emit(0);  // bit3=0: clock (prev=0), no data
-    emit(1); emit(0);  // bit2=0: clock (prev=0), no data
+    emit(0); emit(0);  // bit2=0: MISSING clock, no data
     emit(1); emit(0);  // bit1=0: clock (prev=0), no data
     emit(0); emit(1);  // bit0=1: no clock, data
 }
 
 int mfm_encode_sector(const uint8_t data[512], uint32_t* output) {
+    if (!data || !output) return -1;
+    bit_output = output;
     bit_count = 0;
 
     // 12 bytes of 0x00 sync (96 cells). Previous data bit = 0 (assume).
@@ -90,24 +87,20 @@ int mfm_encode_sector(const uint8_t data[512], uint32_t* output) {
     emit_byte_normal((crc >> 8) & 0xFF, prev);
     emit_byte_normal(crc & 0xFF, (crc >> 8) & 1);
 
+    // Write splice: finish in GAP3 with two complete MFM gap bytes.
+    int prev_gap = crc & 1;
+    for (int i = 0; i < 2; ++i)
+        prev_gap = emit_byte_normal(0x4E, prev_gap);
+
     // Pad to fill any partial 32-bit word at the end.
     while (bit_count & 31) emit(0);
 
-    // Pack bits into 32-bit words, MSB first within each word.
-    int word_count = 0;
-    int bi = 0;
-    while (bi < bit_count) {
-        uint32_t w = 0;
-        for (int i = 0; i < 32 && bi < bit_count; i++, bi++) {
-            if (bit_buf[bi]) w |= (1u << i);
-        }
-        output[word_count++] = w;
-    }
-
-    return word_count;
+    return bit_count / 32;
 }
 
 int mfm_encode_sector_data(const uint8_t data[512], uint32_t* output) {
+    if (!data || !output) return -1;
+    bit_output = output;
     bit_count = 0;
 
     // CRC-16 over A1×3 + FB + 512 bytes
@@ -127,18 +120,7 @@ int mfm_encode_sector_data(const uint8_t data[512], uint32_t* output) {
     // Pad to fill any partial 32-bit word at the end.
     while (bit_count & 31) emit(0);
 
-    // Pack bits into 32-bit words, MSB first within each word.
-    int word_count = 0;
-    int bi = 0;
-    while (bi < bit_count) {
-        uint32_t w = 0;
-        for (int i = 0; i < 32 && bi < bit_count; i++, bi++) {
-            if (bit_buf[bi]) w |= (1u << i);
-        }
-        output[word_count++] = w;
-    }
-
-    return word_count;
+    return bit_count / 32;
 }
 
 // --- Streaming packer for track-level formatting ---
@@ -197,11 +179,11 @@ static int bp_emit_byte_normal(BitPacker* bp, uint8_t byte, int prev_data) {
 
 static void bp_emit_byte_a1(BitPacker* bp) {
     bp_emit(bp, 0); bp_emit(bp, 1);  // bit7=1
-    bp_emit(bp, 0); bp_emit(bp, 0);  // bit6=0 MISSING CLOCK
+    bp_emit(bp, 0); bp_emit(bp, 0);  // bit6=0 no clock (prev=1)
     bp_emit(bp, 0); bp_emit(bp, 1);  // bit5=1
     bp_emit(bp, 0); bp_emit(bp, 0);  // bit4=0 no clock (prev=1)
     bp_emit(bp, 1); bp_emit(bp, 0);  // bit3=0 clock (prev=0)
-    bp_emit(bp, 1); bp_emit(bp, 0);  // bit2=0 clock (prev=0)
+    bp_emit(bp, 0); bp_emit(bp, 0);  // bit2=0 MISSING CLOCK
     bp_emit(bp, 1); bp_emit(bp, 0);  // bit1=0 clock (prev=0)
     bp_emit(bp, 0); bp_emit(bp, 1);  // bit0=1
 }
@@ -223,6 +205,9 @@ static uint16_t bp_crc16(const uint8_t* data, int len, uint16_t crc) {
 
 int format_track_encode(uint8_t cyl, uint8_t head,
                         uint32_t* output, int max_words) {
+    // Index field/gaps + all 18 sector records + a safe trailing gap.
+    if (!output || cyl >= 80 || head >= 2 || max_words < MFM_TRACK_MIN_WORDS)
+        return -1;
     BitPacker bp;
     bp_init(&bp, output, max_words);
 
@@ -231,10 +216,14 @@ int format_track_encode(uint8_t cyl, uint8_t head,
     // GAP4a: 80 bytes of 0x4E after the index pulse
     prev = bp_emit_bytes(&bp, 0x4E, 80, prev);
 
-    for (int sec = 1; sec <= 18; sec++) {
-        // GAP1: 50 bytes 0x4E
-        prev = bp_emit_bytes(&bp, 0x4E, 50, prev);
+    prev = bp_emit_bytes(&bp, 0x00, 12, prev);
+    for (int i = 0; i < 3; ++i)
+        for (int bit = 15; bit >= 0; --bit)
+            bp_emit(&bp, (0x5224 >> bit) & 1); // C2 with missing clock
+    prev = bp_emit_byte_normal(&bp, 0xFC, 0);
+    prev = bp_emit_bytes(&bp, 0x4E, 50, prev); // GAP1, once per track
 
+    for (int sec = 1; sec <= 18; sec++) {
         // SYNC: 12 bytes 0x00
         prev = bp_emit_bytes(&bp, 0x00, 12, prev);
 
@@ -280,13 +269,14 @@ int format_track_encode(uint8_t cyl, uint8_t head,
         prev = bp_emit_byte_normal(&bp, (data_crc >> 8) & 0xFF, prev);
         prev = bp_emit_byte_normal(&bp, data_crc & 0xFF, (data_crc >> 8) & 1);
 
-        // GAP3: 66 bytes 0x4E
-        prev = bp_emit_bytes(&bp, 0x4E, 66, prev);
+        // GAP3: 84 bytes 0x4E
+        prev = bp_emit_bytes(&bp, 0x4E, 84, prev);
     }
 
-    // GAP4b: trailing fill to ensure the write covers the full
-    // revolution with margin for rotational speed variation.
-    prev = bp_emit_bytes(&bp, 0x4E, 400, prev);
+    // Fill only the requested revolution length, never silently truncate
+    // a sector or wrap over the first sector on the following revolution.
+    while (bp.word_count < max_words)
+        prev = bp_emit_bytes(&bp, 0x4E, 1, prev);
 
     bp_flush(&bp);
     return bp.word_count;

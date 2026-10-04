@@ -70,6 +70,7 @@ target_link_libraries(FloppyController
     tinyusb_board
     hardware_pio
     hardware_clocks
+    hardware_dma
 )
 
 # Add the standard include files to the build

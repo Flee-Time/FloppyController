@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// Rewrite only the target sector's sync/DAM/data/CRC in a standard IBM HD
+// layout (22-byte GAP2). Caller must select/seek the spinning drive first.
+// Success requires CRC-valid readback matching all 512 requested bytes.
 bool write_physical_sector(uint8_t target_cyl, uint8_t target_head,
                            uint8_t target_sec, const uint8_t* data);
 

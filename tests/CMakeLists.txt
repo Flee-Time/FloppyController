@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.13)
+project(floppy_write_tests CXX)
+set(CMAKE_CXX_STANDARD 17)
+enable_testing()
+add_executable(mfm_tests mfm_tests.cpp ../src/mfm_encoder.cpp ../src/mfm_decoder.cpp)
+target_include_directories(mfm_tests PRIVATE stubs ../inc)
+add_test(NAME mfm_encode_decode COMMAND mfm_tests)
+add_executable(writer_tests writer_tests.cpp ../src/mfm_writer.cpp ../src/mfm_encoder.cpp)
+target_include_directories(writer_tests PRIVATE writer_stubs stubs ../inc)
+add_test(NAME sector_write_failures COMMAND writer_tests)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+find_program(PIOASM_EXECUTABLE pioasm)
+if(NOT PIOASM_EXECUTABLE)
+    message(FATAL_ERROR "Set PIOASM_EXECUTABLE to pioasm from the Pico SDK")
+endif()
+add_test(NAME flux_writer_timing COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_flux_writer.py ${PIOASM_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../pio/flux_writer.pio)
